@@ -1,0 +1,77 @@
+version: "3.8"
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: agentarena
+      MYSQL_DATABASE: agent_arena
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # Redis 带密码时取消注释并设置 REDIS_PASSWORD：
+    # command: redis-server --requirepass ${REDIS_PASSWORD}
+    # 在 .env 中设置 REDIS_PASSWORD=your_password
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: ../docker/Dockerfile.backend
+    env_file: ../backend/.env
+    environment:
+      AGENTARENA_DB_HOST: mysql
+      AGENTARENA_DB_PORT: 3306
+      AGENTARENA_DB_USER: root
+      AGENTARENA_DB_PASSWORD: agentarena
+      AGENTARENA_DB_NAME: agent_arena
+      AGENTARENA_REDIS_URL: redis://redis:6379
+    ports:
+      - "8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+    env_file: ../backend/.env
+    environment:
+      AGENTARENA_DB_HOST: mysql
+      AGENTARENA_REDIS_URL: redis://redis:6379
+    depends_on:
+      - backend
+      - mysql
+      - redis
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: ../docker/Dockerfile.frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      - backend
+
+volumes:
+  mysql_data:

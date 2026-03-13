@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Context: AgentArena root
+COPY backend/pyproject.toml backend/README.md backend/
+COPY backend/src backend/src
+
+WORKDIR /app/backend
+RUN uv sync --frozen 2>/dev/null || uv sync
+
+# 使用 agentarena-worker（worker_cli.py）
+CMD ["uv", "run", "agentarena-worker"]
