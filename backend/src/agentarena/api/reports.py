@@ -23,6 +23,7 @@ from agentarena.schemas.report_schema import (
     ScoreResponse,
     TaskSummaryReportResponse,
     TopItem,
+    TopItemExample,
 )
 from agentarena.services.summary_report_service import (
     build_comparison_summary,
@@ -204,6 +205,11 @@ async def get_task_summary_report(
             "pros": sc.pros if sc else None,
             "cons": sc.cons if sc else None,
             "optimization": sc.optimization if sc else None,
+            "question": ev.question or "",
+            "answer": ev.answer,
+            "correctness": sc.correctness if sc else None,
+            "clarity": sc.clarity if sc else None,
+            "hallucination": sc.hallucination if sc else None,
         }
         for ev, sc in rows
     ]
@@ -230,8 +236,8 @@ async def get_task_summary_report(
                 agent_name=agent_names.get(av_id, av_id),
                 agent_version_id=av_id,
                 evaluation_count=ev_count,
-                top_pros=[TopItem(text=t["text"], count=t["count"]) for t in data["top_pros"]],
-                top_cons=[TopItem(text=t["text"], count=t["count"]) for t in data["top_cons"]],
+                top_pros=[TopItem(text=t["text"], count=t["count"], examples=[TopItemExample(question=e["question"], answer_snippet=e["answer_snippet"]) for e in t.get("examples", [])]) for t in data["top_pros"]],
+                top_cons=[TopItem(text=t["text"], count=t["count"], examples=[TopItemExample(question=e["question"], answer_snippet=e["answer_snippet"]) for e in t.get("examples", [])]) for t in data["top_cons"]],
                 optimization=OptimizationByCategory(
                     answer_modification=opt["answer"],
                     prompt_optimization=opt["prompt"],
@@ -269,10 +275,24 @@ async def get_task_summary_report(
                     model_display_name=data["model_display_name"],
                     evaluation_count=data["evaluation_count"],
                     avg_score=data.get("avg_score"),
-                    top_pros=[TopItem(text=t["text"], count=t["count"]) for t in data["top_pros"]],
-                    top_cons=[TopItem(text=t["text"], count=t["count"]) for t in data["top_cons"]],
-                )
+                    top_pros=[
+                        TopItem(
+                            text=t["text"],
+                            count=t["count"],
+                            examples=[TopItemExample(question=e["question"], answer_snippet=e["answer_snippet"]) for e in t.get("examples", [])],
+                        )
+                        for t in data["top_pros"]
+                    ],
+                    top_cons=[
+                        TopItem(
+                            text=t["text"],
+                            count=t["count"],
+                            examples=[TopItemExample(question=e["question"], answer_snippet=e["answer_snippet"]) for e in t.get("examples", [])],
+                        )
+                        for t in data["top_cons"]
+                    ],
             )
+        )
         agent_vs_comparison = comp_summary.get("agent_vs_comparison", [])
         takeaways_from_comparison = comp_summary.get("takeaways", comp_summary.get("takeaways_from_comparison", []))
 
@@ -282,8 +302,8 @@ async def get_task_summary_report(
         task_name=task.name,
         total_evaluations=len(ev_list),
         by_agent=by_agent_resp,
-        overall_top_pros=[TopItem(text=t["text"], count=t["count"]) for t in overall["top_pros"]],
-        overall_top_cons=[TopItem(text=t["text"], count=t["count"]) for t in overall["top_cons"]],
+        overall_top_pros=[TopItem(text=t["text"], count=t["count"], examples=[TopItemExample(question=e["question"], answer_snippet=e["answer_snippet"]) for e in t.get("examples", [])]) for t in overall["top_pros"]],
+        overall_top_cons=[TopItem(text=t["text"], count=t["count"], examples=[TopItemExample(question=e["question"], answer_snippet=e["answer_snippet"]) for e in t.get("examples", [])]) for t in overall["top_cons"]],
         overall_optimization=OptimizationByCategory(
             answer_modification=overall["optimizations"]["answer"],
             prompt_optimization=overall["optimizations"]["prompt"],
@@ -294,4 +314,7 @@ async def get_task_summary_report(
         comparison_by_model=comparison_by_model,
         agent_vs_comparison=agent_vs_comparison,
         takeaways_from_comparison=takeaways_from_comparison,
+        reply_quality_summary=overall.get("reply_quality_summary", ""),
+        info_accuracy_summary=overall.get("info_accuracy_summary", ""),
+        reply_experience_suggestions=overall.get("reply_experience_suggestions", []),
     )

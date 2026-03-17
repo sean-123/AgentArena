@@ -89,11 +89,19 @@ class DatabaseConfigSchema(BaseModel):
 # === 任务总结报告 ===
 
 
+class TopItemExample(BaseModel):
+    """优缺点对应的示例：问题与回答片段。"""
+
+    question: str
+    answer_snippet: str  # 回答摘要，约 150 字
+
+
 class TopItem(BaseModel):
-    """高频项（优点/缺点）。"""
+    """高频项（优点/缺点），可含具体举例。"""
 
     text: str
     count: int
+    examples: list[TopItemExample] = []  # 关联的问题与回答示例
 
 
 class OptimizationByCategory(BaseModel):
@@ -143,3 +151,6 @@ class TaskSummaryReportResponse(BaseModel):
     comparison_by_model: list[ComparisonModelSummary] = []  # 各对比模型的评测总结
     agent_vs_comparison: list[str] = []  # Agent 对比通用大模型的优缺点概括
     takeaways_from_comparison: list[str] = []  # 借鉴通用大模型回答的可取之处
+    reply_quality_summary: str = ""  # 回复质量总评（清晰度、结构等）
+    info_accuracy_summary: str = ""  # 信息准确度（正确性、幻觉控制等）
+    reply_experience_suggestions: list[str] = []  # 怎么回复给人的感觉会更好

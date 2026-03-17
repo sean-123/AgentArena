@@ -74,9 +74,15 @@ interface TaskDetail {
   evaluations_by_worker?: WorkerLogSlot[];
 }
 
+interface TopItemExample {
+  question: string;
+  answer_snippet: string;
+}
+
 interface TopItem {
   text: string;
   count: number;
+  examples?: TopItemExample[];
 }
 
 interface OptimizationByCategory {
@@ -117,6 +123,9 @@ interface SummaryReport {
   comparison_by_model?: ComparisonModelSummary[];
   agent_vs_comparison?: string[];
   takeaways_from_comparison?: string[];
+  reply_quality_summary?: string;
+  info_accuracy_summary?: string;
+  reply_experience_suggestions?: string[];
 }
 
 interface Dataset {
@@ -721,6 +730,36 @@ export default function TasksPage() {
               共 {summaryData.total_evaluations} 条评测，按 Agent 聚合优缺点与优化建议
             </Typography.Paragraph>
 
+            {(summaryData.reply_quality_summary || summaryData.info_accuracy_summary || (summaryData.reply_experience_suggestions?.length ?? 0) > 0) && (
+              <div style={{ marginTop: 16, padding: 16, background: "#f9fafb", borderRadius: 8 }}>
+                <Typography.Title level={5} style={{ marginTop: 0, color: "#1677ff" }}>
+                  质量总评
+                </Typography.Title>
+                {summaryData.reply_quality_summary && (
+                  <div style={{ marginBottom: 12 }}>
+                    <Typography.Text strong>回复质量：</Typography.Text>
+                    <Typography.Paragraph style={{ marginBottom: 0 }}>{summaryData.reply_quality_summary}</Typography.Paragraph>
+                  </div>
+                )}
+                {summaryData.info_accuracy_summary && (
+                  <div style={{ marginBottom: 12 }}>
+                    <Typography.Text strong>信息准确度：</Typography.Text>
+                    <Typography.Paragraph style={{ marginBottom: 0 }}>{summaryData.info_accuracy_summary}</Typography.Paragraph>
+                  </div>
+                )}
+                {summaryData.reply_experience_suggestions?.length ? (
+                  <div>
+                    <Typography.Text strong>回复体验改进建议：</Typography.Text>
+                    <ul style={{ marginBottom: 0, paddingLeft: 20 }}>
+                      {summaryData.reply_experience_suggestions.map((s, i) => (
+                        <li key={i}>{s}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            )}
+
             {summaryData.overall_top_pros?.length > 0 && (
               <>
                 <Typography.Title level={5} style={{ marginTop: 16, color: "#52c41a" }}>
@@ -728,9 +767,19 @@ export default function TasksPage() {
                 </Typography.Title>
                 <ul style={{ paddingLeft: 20, marginBottom: 0 }}>
                   {summaryData.overall_top_pros.map((p, i) => (
-                    <li key={i}>
-                      {p.text}
+                    <li key={i} style={{ marginBottom: 12 }}>
+                      <span>{p.text}</span>
                       <span style={{ color: "#999", marginLeft: 8 }}>×{p.count}</span>
+                      {p.examples?.length ? (
+                        <div style={{ marginTop: 6, marginLeft: 0, fontSize: 13, color: "#595959" }}>
+                          {p.examples.map((ex, j) => (
+                            <div key={j} style={{ marginBottom: 4, padding: 8, background: "#fafafa", borderRadius: 4 }}>
+                              <div><strong>例：</strong>问：「{ex.question?.slice(0, 80)}{ex.question && ex.question.length > 80 ? "…" : ""}」</div>
+                              <div style={{ marginTop: 4 }}>答：「{ex.answer_snippet?.slice(0, 120)}{ex.answer_snippet && ex.answer_snippet.length > 120 ? "…" : ""}」</div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                     </li>
                   ))}
                 </ul>
@@ -744,9 +793,19 @@ export default function TasksPage() {
                 </Typography.Title>
                 <ul style={{ paddingLeft: 20, marginBottom: 0 }}>
                   {summaryData.overall_top_cons.map((c, i) => (
-                    <li key={i}>
-                      {c.text}
+                    <li key={i} style={{ marginBottom: 12 }}>
+                      <span>{c.text}</span>
                       <span style={{ color: "#999", marginLeft: 8 }}>×{c.count}</span>
+                      {c.examples?.length ? (
+                        <div style={{ marginTop: 6, marginLeft: 0, fontSize: 13, color: "#595959" }}>
+                          {c.examples.map((ex, j) => (
+                            <div key={j} style={{ marginBottom: 4, padding: 8, background: "#fff2f0", borderRadius: 4 }}>
+                              <div><strong>例：</strong>问：「{ex.question?.slice(0, 80)}{ex.question && ex.question.length > 80 ? "…" : ""}」</div>
+                              <div style={{ marginTop: 4 }}>答：「{ex.answer_snippet?.slice(0, 120)}{ex.answer_snippet && ex.answer_snippet.length > 120 ? "…" : ""}」</div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                     </li>
                   ))}
                 </ul>
