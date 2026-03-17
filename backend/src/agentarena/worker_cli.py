@@ -34,8 +34,10 @@ from agentarena.core.config import get_settings
 from agentarena.evaluation_engine.agent_runner import call_agent
 from agentarena.evaluation_engine.arena_ranking import INITIAL_ELO
 from agentarena.evaluation_engine.llm_judge import judge_answer
+from agentarena.evaluation_engine.llm_comparison import call_comparison_model
 from agentarena.evaluation_engine.persona import generate_persona_question
 from agentarena.models.agent import Agent, AgentVersion
+from agentarena.models.comparison import ComparisonEvaluation, ComparisonScore
 from agentarena.models.evaluation import Evaluation, Score
 from agentarena.models.leaderboard import Leaderboard
 from agentarena.models.task import Task, TaskRun
@@ -116,7 +118,195 @@ async def get_agent_config(session: AsyncSession, agent_version_id: str) -> dict
 
 
 async def process_job(session: AsyncSession, job: dict) -> bool:
-    """Process single evaluation job."""
+    """Process evaluation job (single or batch).单 Agent 为批次顺序执行；多 Agent/对比模型时不同 Worker 并行。"""
+    task_id = job.get("task_id")
+    if task_id:
+        t_result = await session.execute(select(Task.id).where(Task.id == task_id))
+        if not t_result.scalar_one_or_none():
+            print(f"[Worker] Task {task_id} 已删除，跳过 job {job.get('id', '')}")
+            return True
+
+    job_type = job.get("job_type", "agent")
+    # 批次 job：一个 Worker 顺序处理该 Agent/模型的所有 testcase
+    if job_type == "agent_batch":
+        return await _process_agent_batch(session, job)
+    if job_type == "comparison_batch":
+        return await _process_comparison_batch(session, job)
+    # 兼容旧版单条 job
+    if job_type == "comparison":
+        return await _process_comparison_job(session, job)
+    return await _process_agent_job(session, job)
+
+
+async def _process_comparison_job(session: AsyncSession, job: dict) -> bool:
+    """处理对比通用大模型任务（DouBao/Qwen/DeepSeek）。"""
+    task_id = job.get("task_id")
+    task_run_id = job.get("task_run_id")
+    testcase_id = job.get("testcase_id")
+    model_type = job.get("compare_model")
+    question = job.get("question", "")
+    key_points = job.get("key_points")
+
+    if not model_type or model_type not in ("doubao", "qwen", "deepseek"):
+        print(f"[WARN] Invalid compare_model={model_type}, skipping")
+        return False
+
+    # Persona 改写：如有 persona_question 或 persona 则使用
+    persona_question = job.get("persona_question")
+    persona = job.get("persona")
+    canonical_question = question
+    if persona_question:
+        question = persona_question
+    elif persona and canonical_question:
+        question = await generate_persona_question(canonical_question, persona=persona)
+
+    print(f"[Worker] [对比-{model_type}] 提问: {_truncate(question, 500)}")
+
+    answer, latency = await call_comparison_model(model_type, question)
+    print(f"[Worker] [对比-{model_type}] 回答: {_truncate(answer, 800)} 耗时: {latency:.2f}s")
+
+    scores_data = await judge_answer(question=question, answer=answer, key_points=key_points)
+
+    ce_id = f"ce_{uuid.uuid4().hex[:12]}"
+    comp_ev = ComparisonEvaluation(
+        id=ce_id,
+        task_id=task_id,
+        task_run_id=task_run_id,
+        testcase_id=testcase_id,
+        model_type=model_type,
+        question=question,
+        answer=answer,
+        latency=latency,
+    )
+    session.add(comp_ev)
+    await session.flush()
+
+    cs_id = f"cs_{uuid.uuid4().hex[:12]}"
+    comp_score = ComparisonScore(
+        id=cs_id,
+        comparison_evaluation_id=ce_id,
+        correctness=scores_data.get("correctness"),
+        completeness=scores_data.get("completeness"),
+        clarity=scores_data.get("clarity"),
+        hallucination=scores_data.get("hallucination"),
+        avg_score=scores_data.get("avg_score"),
+        pros=_to_score_text(scores_data.get("pros")),
+        cons=_to_score_text(scores_data.get("cons")),
+        optimization=_to_score_text(scores_data.get("optimization")),
+    )
+    session.add(comp_score)
+
+    await _check_task_run_completion(session, job)
+    return True
+
+
+async def _process_agent_batch(session: AsyncSession, job: dict) -> bool:
+    """处理 Agent 批次：顺序执行该 Agent 的全部 testcase，由单个 Worker 完成。"""
+    task_id = job.get("task_id")
+    task_run_id = job.get("task_run_id")
+    agent_version_id = job.get("agent_version_id")
+    testcases = job.get("testcases") or []
+    total_evaluations = job.get("total_evaluations")
+    if not agent_version_id or not testcases:
+        return False
+    print(f"[Worker] [批次-Agent] 开始处理 {len(testcases)} 条 testcase")
+    for i, tc in enumerate(testcases):
+        mini_job = {
+            "task_id": task_id,
+            "task_run_id": task_run_id,
+            "total_evaluations": total_evaluations,
+            "testcase_id": tc.get("testcase_id"),
+            "agent_version_id": agent_version_id,
+            "question": tc.get("question", ""),
+            "persona_question": tc.get("persona_question"),
+            "persona": tc.get("persona"),
+            "key_points": tc.get("key_points"),
+        }
+        ok = await _process_agent_job(session, mini_job)
+        if not ok:
+            print(f"[Worker] [批次-Agent] testcase {i+1}/{len(testcases)} 失败，继续")
+    # 批次结束时再次检查完成状态（若最后一条失败/skip 可能未触发）
+    await _check_task_run_completion(session, job)
+    return True
+
+
+async def _process_comparison_batch(session: AsyncSession, job: dict) -> bool:
+    """处理对比模型批次：顺序执行该模型的全部 testcase，由单个 Worker 完成。"""
+    task_id = job.get("task_id")
+    task_run_id = job.get("task_run_id")
+    model_type = job.get("compare_model")
+    testcases = job.get("testcases") or []
+    total_evaluations = job.get("total_evaluations")
+    if not model_type or not testcases:
+        return False
+    print(f"[Worker] [批次-{model_type}] 开始处理 {len(testcases)} 条 testcase")
+    for i, tc in enumerate(testcases):
+        mini_job = {
+            "task_id": task_id,
+            "task_run_id": task_run_id,
+            "total_evaluations": total_evaluations,
+            "testcase_id": tc.get("testcase_id"),
+            "compare_model": model_type,
+            "question": tc.get("question", ""),
+            "persona_question": tc.get("persona_question"),
+            "persona": tc.get("persona"),
+            "key_points": tc.get("key_points"),
+        }
+        ok = await _process_comparison_job(session, mini_job)
+        if not ok:
+            print(f"[Worker] [批次-{model_type}] testcase {i+1}/{len(testcases)} 失败，继续")
+    await _check_task_run_completion(session, job)
+    return True
+
+
+async def _check_task_run_completion(session: AsyncSession, job: dict) -> None:
+    """检查该 task_run 是否所有评测已完成，完成则更新状态。"""
+    task_id = job.get("task_id")
+    task_run_id = job.get("task_run_id")
+    # 批次 job 用 total_evaluations，旧版单条 job 用 total_jobs；若无则从 task_run 读取
+    total_jobs = job.get("total_evaluations") or job.get("total_jobs")
+    if not task_run_id:
+        return
+    if total_jobs is None:
+        tr_res = await session.execute(select(TaskRun).where(TaskRun.id == task_run_id))
+        tr = tr_res.scalar_one_or_none()
+        total_jobs = tr.total_jobs if tr and tr.total_jobs is not None else None
+    if total_jobs is None:
+        return
+    from sqlalchemy import func
+
+    ev_cnt_result = await session.execute(
+        select(func.count()).select_from(Evaluation).where(
+            Evaluation.task_run_id == task_run_id
+        )
+    )
+    ce_cnt_result = await session.execute(
+        select(func.count()).select_from(ComparisonEvaluation).where(
+            ComparisonEvaluation.task_run_id == task_run_id
+        )
+    )
+    ev_cnt = ev_cnt_result.scalar()
+    ce_cnt = ce_cnt_result.scalar()
+    completed = int(ev_cnt or 0) + int(ce_cnt or 0)
+    total_jobs = int(total_jobs)
+    if completed >= total_jobs:
+        tr_result = await session.execute(select(TaskRun).where(TaskRun.id == task_run_id))
+        tr = tr_result.scalar_one_or_none()
+        if tr and tr.status in ("pending", "running"):
+            from datetime import datetime, timezone
+            tr.status = "completed"
+            tr.completed_at = datetime.now(timezone.utc)
+            t_result = await session.execute(select(Task).where(Task.id == task_id))
+            t = t_result.scalar_one_or_none()
+            if t:
+                t.status = "completed"
+            print(f"[Worker] 任务 {task_id} 已完成 ({completed}/{total_jobs})，已更新为 completed")
+    elif completed > 0 or total_jobs > 0:
+        print(f"[Worker] [完成检查] task_run={task_run_id} 进度 {completed}/{total_jobs}，等待更多评测")
+
+
+async def _process_agent_job(session: AsyncSession, job: dict) -> bool:
+    """Process single agent evaluation job."""
     task_id = job.get("task_id")
     task_run_id = job.get("task_run_id")
     testcase_id = job.get("testcase_id")
@@ -171,21 +361,36 @@ async def process_job(session: AsyncSession, job: dict) -> bool:
     except Exception as e:
         err_detail = str(e)
         try:
-            orig = None
-            # tenacity 使用 raise retry_exc from fut.exception()，原始异常在 __cause__
-            if isinstance(e, HTTPStatusError) and getattr(e, "response", None) is not None:
-                orig = e
-            elif isinstance(e.__cause__, HTTPStatusError):
-                orig = e.__cause__
-            elif isinstance(e, RetryError) and getattr(e, "last_attempt", None) is not None:
-                out = e.last_attempt
-                orig = getattr(out, "exception", lambda: None)()
-                if orig is None and hasattr(out, "result"):
-                    try:
-                        out.result()
-                    except Exception as ex:
-                        orig = ex
-            if isinstance(orig, HTTPStatusError) and getattr(orig, "response", None) is not None:
+            # 递归查找 HTTPStatusError：支持 __cause__/__context__、tenacity RetryError
+            def find_http_err(ex: BaseException | None) -> HTTPStatusError | None:
+                if ex is None:
+                    return None
+                if isinstance(ex, HTTPStatusError) and getattr(ex, "response", None) is not None:
+                    return ex
+                for attr in ("__cause__", "__context__"):
+                    child = getattr(ex, attr, None)
+                    if child and child is not ex:
+                        found = find_http_err(child)
+                        if found:
+                            return found
+                if isinstance(ex, RetryError) and getattr(ex, "last_attempt", None) is not None:
+                    la = ex.last_attempt
+                    # tenacity Attempt 或 asyncio.Future：exception() 返回原始异常
+                    if hasattr(la, "exception") and callable(getattr(la, "exception")):
+                        try:
+                            inner = la.exception()
+                            return find_http_err(inner) if inner else None
+                        except Exception:
+                            pass
+                    if hasattr(la, "result") and callable(getattr(la, "result")):
+                        try:
+                            la.result()
+                        except Exception as inner:
+                            return find_http_err(inner)
+                return None
+
+            orig = find_http_err(e)
+            if orig is not None and getattr(orig, "response", None) is not None:
                 r = orig.response
                 err_detail = f"HTTP {r.status_code} {r.url} - {(r.text or '')[:300]}"
         except Exception:
@@ -237,12 +442,15 @@ async def process_job(session: AsyncSession, job: dict) -> bool:
     agent_name = config.get("agent_name", agent_version_id)
     if not task_run_id:
         task_run_id = None  # legacy: no run id
+    # 使用 limit(1) 避免多 Worker 并发时重复行导致 scalar_one_or_none 报错
     lb_result = await session.execute(
-        select(Leaderboard).where(
+        select(Leaderboard)
+        .where(
             Leaderboard.task_id == task_id,
             Leaderboard.task_run_id == task_run_id,
             Leaderboard.agent_version_id == agent_version_id,
         )
+        .limit(1)
     )
     lb = lb_result.scalar_one_or_none()
     if not lb:
@@ -267,28 +475,7 @@ async def process_job(session: AsyncSession, job: dict) -> bool:
     if lb.elo is None:
         lb.elo = INITIAL_ELO
 
-    # 检查是否所有 job 已完成，若是则更新 task_run 和 task 状态
-    total_jobs = job.get("total_jobs")
-    if total_jobs is not None and task_run_id:
-        from sqlalchemy import func
-        cnt_result = await session.execute(
-            select(func.count()).select_from(Evaluation).where(
-                Evaluation.task_run_id == task_run_id
-            )
-        )
-        completed = cnt_result.scalar() or 0
-        if completed >= total_jobs:
-            tr_result = await session.execute(select(TaskRun).where(TaskRun.id == task_run_id))
-            tr = tr_result.scalar_one_or_none()
-            if tr and tr.status in ("pending", "running"):
-                from datetime import datetime, timezone
-                tr.status = "completed"
-                tr.completed_at = datetime.now(timezone.utc)
-                t_result = await session.execute(select(Task).where(Task.id == task_id))
-                t = t_result.scalar_one_or_none()
-                if t:
-                    t.status = "completed"
-
+    await _check_task_run_completion(session, job)
     return True
 
 

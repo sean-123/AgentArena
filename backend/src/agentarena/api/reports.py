@@ -9,11 +9,13 @@ from sqlalchemy.orm import joinedload
 
 from agentarena.core.database import DbSession
 from agentarena.models.agent import Agent, AgentVersion
+from agentarena.models.comparison import ComparisonEvaluation, ComparisonScore
 from agentarena.models.evaluation import Evaluation, Score
 from agentarena.models.leaderboard import Leaderboard
 from agentarena.models.task import Task, TaskRun
 from agentarena.schemas.report_schema import (
     AgentSummary,
+    ComparisonModelSummary,
     EvaluationResponse,
     EvaluationWithScoreResponse,
     LeaderboardEntry,
@@ -22,7 +24,11 @@ from agentarena.schemas.report_schema import (
     TaskSummaryReportResponse,
     TopItem,
 )
-from agentarena.services.summary_report_service import build_summary
+from agentarena.services.summary_report_service import (
+    build_comparison_summary,
+    build_summary,
+    MODEL_DISPLAY_NAMES,
+)
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -236,6 +242,40 @@ async def get_task_summary_report(
         )
 
     overall = summary["overall"]
+    # 对比通用大模型
+    comp_q = (
+        select(ComparisonEvaluation, ComparisonScore)
+        .join(ComparisonScore, ComparisonScore.comparison_evaluation_id == ComparisonEvaluation.id)
+        .where(
+            ComparisonEvaluation.task_id == task_id,
+            ComparisonEvaluation.task_run_id == effective_run_id,
+        )
+    )
+    comp_result = await db.execute(comp_q)
+    comp_rows = comp_result.all()
+    comp_ev_list = [
+        {"model_type": ce.model_type, "pros": cs.pros, "cons": cs.cons, "avg_score": cs.avg_score}
+        for ce, cs in comp_rows
+    ]
+    comparison_by_model: list[ComparisonModelSummary] = []
+    agent_vs_comparison: list[str] = []
+    takeaways_from_comparison: list[str] = []
+    if comp_ev_list:
+        comp_summary = build_comparison_summary(comp_ev_list, top_n=5)
+        for data in comp_summary["by_model"]:
+            comparison_by_model.append(
+                ComparisonModelSummary(
+                    model_type=data["model_type"],
+                    model_display_name=data["model_display_name"],
+                    evaluation_count=data["evaluation_count"],
+                    avg_score=data.get("avg_score"),
+                    top_pros=[TopItem(text=t["text"], count=t["count"]) for t in data["top_pros"]],
+                    top_cons=[TopItem(text=t["text"], count=t["count"]) for t in data["top_cons"]],
+                )
+            )
+        agent_vs_comparison = comp_summary.get("agent_vs_comparison", [])
+        takeaways_from_comparison = comp_summary.get("takeaways", comp_summary.get("takeaways_from_comparison", []))
+
     return TaskSummaryReportResponse(
         task_id=task_id,
         task_run_id=effective_run_id,
@@ -251,4 +291,7 @@ async def get_task_summary_report(
             agent_development=overall["optimizations"].get("development", []),
         ),
         agent_development_suggestions=overall.get("agent_development_suggestions", []),
+        comparison_by_model=comparison_by_model,
+        agent_vs_comparison=agent_vs_comparison,
+        takeaways_from_comparison=takeaways_from_comparison,
     )

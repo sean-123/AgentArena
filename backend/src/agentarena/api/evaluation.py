@@ -84,6 +84,13 @@ async def run_evaluation(
     if not agent_version_ids:
         raise HTTPException(400, "No agent versions found")
 
+    compare_model_ids: list[str] = []
+    if task.compare_model_ids:
+        try:
+            compare_model_ids = json.loads(task.compare_model_ids)
+        except json.JSONDecodeError:
+            pass
+
     # Create task run
     task_run = TaskRun(
         id=f"run_{uuid.uuid4().hex[:12]}",
@@ -101,6 +108,7 @@ async def run_evaluation(
             task_run_id=task_run.id,
             dataset_version_id=dv_id,
             agent_version_ids=agent_version_ids,
+            compare_model_ids=compare_model_ids or None,
         )
         task_run.total_jobs = job_count
         task_run.status = "running"

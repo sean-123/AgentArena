@@ -14,6 +14,7 @@ from agentarena.models.task import Task, TaskRun
 from agentarena.models.dataset import Dataset, DatasetVersion, Testcase
 from agentarena.models.agent import Agent, AgentVersion
 from agentarena.models.evaluation import Evaluation, Score
+from agentarena.models.comparison import ComparisonEvaluation, ComparisonScore
 from agentarena.models.leaderboard import Leaderboard, ArenaMatch
 from agentarena.models.system_config import SystemConfig
 
@@ -50,6 +51,8 @@ def init_tables(engine: Engine) -> None:
         AgentVersion,
         Evaluation,
         Score,
+        ComparisonEvaluation,
+        ComparisonScore,
         Leaderboard,
         ArenaMatch,
         SystemConfig,
@@ -86,6 +89,17 @@ def run_init() -> dict:
                 ), {"db": settings.db_name})
                 if (r.scalar() or 0) == 0:
                     conn.execute(text("ALTER TABLE leaderboard ADD COLUMN task_run_id VARCHAR(50) NULL"))
+                    conn.commit()
+            except Exception:
+                pass
+            # Migration: add compare_model_ids to tasks
+            try:
+                r = conn.execute(text(
+                    "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = :db AND TABLE_NAME = 'tasks' AND COLUMN_NAME = 'compare_model_ids'"
+                ), {"db": settings.db_name})
+                if (r.scalar() or 0) == 0:
+                    conn.execute(text("ALTER TABLE tasks ADD COLUMN compare_model_ids TEXT NULL"))
                     conn.commit()
             except Exception:
                 pass

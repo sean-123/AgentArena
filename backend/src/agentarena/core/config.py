@@ -68,6 +68,19 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o-mini"
 
+    # 对比通用大模型（DouBao/Qwen/DeepSeek）- 均使用 OpenAI SDK 调用
+    doubao_api_key: str = ""
+    doubao_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    doubao_model: str = ""  # 火山方舟推理接入点 ID，如 ep-xxx
+
+    qwen_api_key: str = ""
+    qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    qwen_model: str = "qwen-turbo"
+
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-chat"
+
     # Paths
     base_dir: Path = Path(__file__).resolve().parent.parent.parent.parent
 

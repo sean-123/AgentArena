@@ -19,6 +19,7 @@ class Task(Base, TimestampMixin):
         String(50), ForeignKey("dataset_versions.id"), nullable=True
     )
     agent_ids: Column[str] = Column(Text, nullable=True)  # JSON array of agent IDs
+    compare_model_ids: Column[str] = Column(Text, nullable=True)  # JSON array: ["doubao","qwen","deepseek"]
     status: Column[str] = Column(String(20), default="pending")  # pending, running, completed, failed
 
     task_runs = relationship("TaskRun", back_populates="task")

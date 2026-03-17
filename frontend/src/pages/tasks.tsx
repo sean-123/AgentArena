@@ -18,6 +18,8 @@ import {
   Typography,
   Collapse,
   Tag,
+  Checkbox,
+  Tabs,
 } from "antd";
 import { PlusOutlined, PlayCircleOutlined, EyeOutlined, FileTextOutlined } from "@ant-design/icons";
 import MainLayout from "@/components/MainLayout";
@@ -33,6 +35,30 @@ interface Task {
   created_at: string;
 }
 
+interface EvLog {
+  id: string;
+  agent_version_id?: string;
+  model_type?: string;
+  question: string;
+  answer: string;
+  latency?: number;
+  created_at?: string;
+}
+
+interface WorkerSlot {
+  slot_id: string;
+  label: string;
+  total: number;
+  completed: number;
+  percent: number;
+}
+
+interface WorkerLogSlot {
+  slot_id: string;
+  label: string;
+  logs: EvLog[];
+}
+
 interface TaskDetail {
   task: Task;
   latest_run?: {
@@ -43,14 +69,9 @@ interface TaskDetail {
   };
   progress: { total: number; completed: number; percent: number };
   config: { dataset_name?: string; agent_names?: string[] };
-  evaluations: Array<{
-    id: string;
-    agent_version_id: string;
-    question: string;
-    answer: string;
-    latency?: number;
-    created_at?: string;
-  }>;
+  evaluations: EvLog[];
+  progress_by_worker?: WorkerSlot[];
+  evaluations_by_worker?: WorkerLogSlot[];
 }
 
 interface TopItem {
@@ -74,6 +95,15 @@ interface AgentSummary {
   optimization: OptimizationByCategory;
 }
 
+interface ComparisonModelSummary {
+  model_type: string;
+  model_display_name: string;
+  evaluation_count: number;
+  avg_score?: number;
+  top_pros: TopItem[];
+  top_cons: TopItem[];
+}
+
 interface SummaryReport {
   task_id: string;
   task_run_id: string | null;
@@ -84,6 +114,9 @@ interface SummaryReport {
   overall_top_cons: TopItem[];
   overall_optimization: OptimizationByCategory | null;
   agent_development_suggestions?: string[];
+  comparison_by_model?: ComparisonModelSummary[];
+  agent_vs_comparison?: string[];
+  takeaways_from_comparison?: string[];
 }
 
 interface Dataset {
@@ -155,6 +188,7 @@ export default function TasksPage() {
         dataset_id: vals.dataset_id || undefined,
         dataset_version_id: vals.dataset_version_id || undefined,
         agent_ids: vals.agent_ids?.length ? vals.agent_ids : undefined,
+        compare_model_ids: vals.compare_model_ids?.length ? vals.compare_model_ids : undefined,
       });
       message.success("任务创建成功");
       setModalOpen(false);
@@ -262,6 +296,18 @@ export default function TasksPage() {
     }
   };
 
+  const handleForceComplete = async () => {
+    if (!detailTaskId) return;
+    try {
+      await apiPost(`/api/tasks/${detailTaskId}/force-complete`, {});
+      message.success("已强制标记为已完成");
+      loadTaskDetail(detailTaskId);
+      loadTasks();
+    } catch (e) {
+      message.error("操作失败: " + (e as Error).message);
+    }
+  };
+
   useEffect(() => {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
@@ -362,6 +408,15 @@ export default function TasksPage() {
               options={agents.map((a) => ({ label: a.name, value: a.id }))}
             />
           </Form.Item>
+          <Form.Item name="compare_model_ids" label="对比通用大模型（可选）">
+            <Checkbox.Group
+              options={[
+                { label: "豆包 DouBao", value: "doubao" },
+                { label: "通义千问 Qwen", value: "qwen" },
+                { label: "DeepSeek", value: "deepseek" },
+              ]}
+            />
+          </Form.Item>
         </Form>
       </Modal>
 
@@ -393,85 +448,253 @@ export default function TasksPage() {
 
             {detail.latest_run && (
               <>
-                <Typography.Title level={5} style={{ marginTop: 24 }}>
+                <Typography.Title level={5} style={{ marginTop: 28, marginBottom: 20 }}>
                   执行情况
                 </Typography.Title>
-                <Descriptions column={1} size="small">
-                  <Descriptions.Item label="本次运行">
-                    {statusMap[detail.latest_run.status] ?? detail.latest_run.status}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="进度">
-                    <Progress
-                      percent={detail.progress?.percent ?? 0}
-                      status={detail.task.status === "running" ? "active" : undefined}
-                    />
-                    <span style={{ fontSize: 12, color: "#666" }}>
-                      {detail.progress?.completed ?? 0} / {detail.progress?.total ?? 0} 条
-                    </span>
-                  </Descriptions.Item>
+                <div
+                  style={{
+                    padding: 28,
+                    background: "#fafafa",
+                    borderRadius: 12,
+                    border: "1px solid #f0f0f0",
+                  }}
+                >
+                  {/* 顶部：状态 + 总进度 */}
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: 28,
+                      marginBottom: 28,
+                      padding: "20px 24px",
+                      background: "#fff",
+                      borderRadius: 10,
+                      border: "1px solid #f0f0f0",
+                      alignItems: "center",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ color: "#8c8c8c", fontSize: 13 }}>运行状态</span>
+                      <Tag color={detail.latest_run.status === "running" ? "processing" : "success"}>
+                        {statusMap[detail.latest_run.status] ?? detail.latest_run.status}
+                      </Tag>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                      <span style={{ color: "#8c8c8c", fontSize: 13 }}>总进度</span>
+                      <span style={{ fontWeight: 600, fontSize: 18, color: "#262626" }}>
+                        {detail.progress?.completed ?? 0} / {detail.progress?.total ?? 0}
+                      </span>
+                      <span style={{ color: "#8c8c8c", fontSize: 13 }}>条</span>
+                    </div>
+                  </div>
+
+                  {/* 各执行单元：卡片式，大间距 */}
+                  {detail.progress_by_worker?.length ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+                      {detail.progress_by_worker.map((slot) => (
+                        <div
+                          key={slot.slot_id}
+                          style={{
+                            padding: "20px 24px",
+                            background: "#fff",
+                            borderRadius: 10,
+                            border: "1px solid #f0f0f0",
+                            borderLeft: `4px solid ${slot.slot_id.startsWith("compare_") ? "#fa8c16" : "#1890ff"}`,
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              marginBottom: 14,
+                            }}
+                          >
+                            <span style={{ fontWeight: 600, fontSize: 15, color: "#262626" }}>
+                              {slot.label}
+                            </span>
+                            <span style={{ fontSize: 14, color: "#595959", fontWeight: 500 }}>
+                              {slot.total > 0 ? (
+                                <>{slot.completed} / {slot.total} 条</>
+                              ) : (
+                                <>{slot.completed} 条</>
+                              )}
+                            </span>
+                          </div>
+                          <Progress
+                            percent={slot.total > 0 ? slot.percent : 0}
+                            status={detail.task.status === "running" ? "active" : undefined}
+                            strokeColor={slot.percent >= 100 ? "#52c41a" : undefined}
+                            showInfo={slot.total > 0}
+                            strokeWidth={10}
+                            style={{ marginBottom: 0 }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        padding: "16px 20px",
+                        background: "#fff",
+                        borderRadius: 10,
+                        border: "1px solid #f0f0f0",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          marginBottom: 12,
+                        }}
+                      >
+                        <span style={{ fontWeight: 500, fontSize: 14 }}>整体进度</span>
+                        <span style={{ fontSize: 13, color: "#595959" }}>
+                          {detail.progress?.completed ?? 0} / {detail.progress?.total ?? 0} 条
+                        </span>
+                      </div>
+                      <Progress
+                        percent={detail.progress?.percent ?? 0}
+                        status={detail.task.status === "running" ? "active" : undefined}
+                        strokeColor={(detail.progress?.percent ?? 0) >= 100 ? "#52c41a" : undefined}
+                      />
+                    </div>
+                  )}
+
                   {detail.task.status === "completed" && (
-                    <Descriptions.Item>
+                    <div style={{ marginTop: 16 }}>
                       <Button
                         type="primary"
                         icon={<FileTextOutlined />}
                         onClick={openSummaryReport}
+                        block
+                        size="large"
+                        style={{ height: 40, borderRadius: 8 }}
                       >
                         查看总结报告
                       </Button>
-                    </Descriptions.Item>
+                    </div>
                   )}
-                </Descriptions>
+                  {detail.task.status === "running" && (
+                    <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid #f0f0f0" }}>
+                      <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 8 }}>
+                        若所有 Worker 已执行完毕但状态未更新，可点击强制完成以查看总结报告
+                      </Typography.Text>
+                      <Button type="default" danger onClick={handleForceComplete}>
+                        强制完成
+                      </Button>
+                    </div>
+                  )}
+                </div>
               </>
             )}
 
             <Typography.Title level={5} style={{ marginTop: 24 }}>
               执行日志
             </Typography.Title>
-            <div
-              style={{
-                maxHeight: 320,
-                overflow: "auto",
-                background: "#f5f5f5",
-                padding: 12,
-                borderRadius: 8,
-                fontFamily: "monospace",
-                fontSize: 12,
-              }}
-            >
-              {detail.evaluations?.length ? (
-                detail.evaluations.map((ev, i) => (
-                  <div
-                    key={ev.id}
-                    style={{
-                      marginBottom: 12,
-                      padding: 8,
-                      background: "#fff",
-                      borderRadius: 4,
-                      borderLeft: "3px solid #1890ff",
-                    }}
-                  >
-                    <div style={{ color: "#666", marginBottom: 4 }}>
-                      [{ev.created_at ? new Date(ev.created_at).toLocaleTimeString() : "-"}] 完成 1 条
-                      {ev.latency != null ? ` · ${(ev.latency * 1000).toFixed(0)}ms` : ""}
+            {detail.evaluations_by_worker?.length ? (
+              <Tabs
+                defaultActiveKey={detail.evaluations_by_worker[0]?.slot_id}
+                items={detail.evaluations_by_worker.map((slot) => ({
+                  key: slot.slot_id,
+                  label: `${slot.label} (${slot.logs?.length ?? 0})`,
+                  children: (
+                    <div
+                      style={{
+                        maxHeight: 320,
+                        overflow: "auto",
+                        background: "#f5f5f5",
+                        padding: 12,
+                        borderRadius: 8,
+                        fontFamily: "monospace",
+                        fontSize: 12,
+                      }}
+                    >
+                      {slot.logs?.length ? (
+                        slot.logs.map((ev) => (
+                          <div
+                            key={ev.id}
+                            style={{
+                              marginBottom: 12,
+                              padding: 8,
+                              background: "#fff",
+                              borderRadius: 4,
+                              borderLeft: "3px solid #1890ff",
+                            }}
+                          >
+                            <div style={{ color: "#666", marginBottom: 4 }}>
+                              [{ev.created_at ? new Date(ev.created_at).toLocaleTimeString() : "-"}] 完成 1 条
+                              {ev.latency != null ? ` · ${(ev.latency * 1000).toFixed(0)}ms` : ""}
+                            </div>
+                            <div>
+                              <strong>问：</strong>
+                              {ev.question}
+                              {ev.question?.length >= 200 ? "…" : ""}
+                            </div>
+                            {ev.answer && (
+                              <div style={{ marginTop: 4 }}>
+                                <strong>答：</strong>
+                                {ev.answer}
+                                {ev.answer.length >= 200 ? "…" : ""}
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      ) : (
+                        <div style={{ color: "#999" }}>暂无执行记录</div>
+                      )}
                     </div>
-                    <div>
-                      <strong>问：</strong>
-                      {ev.question}
-                      {ev.question?.length >= 200 ? "…" : ""}
-                    </div>
-                    {ev.answer && (
-                      <div style={{ marginTop: 4 }}>
-                        <strong>答：</strong>
-                        {ev.answer}
-                        {ev.answer.length >= 200 ? "…" : ""}
+                  ),
+                }))}
+              />
+            ) : (
+              <div
+                style={{
+                  maxHeight: 320,
+                  overflow: "auto",
+                  background: "#f5f5f5",
+                  padding: 12,
+                  borderRadius: 8,
+                  fontFamily: "monospace",
+                  fontSize: 12,
+                }}
+              >
+                {detail.evaluations?.length ? (
+                  detail.evaluations.map((ev) => (
+                    <div
+                      key={ev.id}
+                      style={{
+                        marginBottom: 12,
+                        padding: 8,
+                        background: "#fff",
+                        borderRadius: 4,
+                        borderLeft: "3px solid #1890ff",
+                      }}
+                    >
+                      <div style={{ color: "#666", marginBottom: 4 }}>
+                        [{ev.created_at ? new Date(ev.created_at).toLocaleTimeString() : "-"}] 完成 1 条
+                        {ev.latency != null ? ` · ${(ev.latency * 1000).toFixed(0)}ms` : ""}
                       </div>
-                    )}
-                  </div>
-                ))
-              ) : (
-                <div style={{ color: "#999" }}>暂无执行记录</div>
-              )}
-            </div>
+                      <div>
+                        <strong>问：</strong>
+                        {ev.question}
+                        {ev.question?.length >= 200 ? "…" : ""}
+                      </div>
+                      {ev.answer && (
+                        <div style={{ marginTop: 4 }}>
+                          <strong>答：</strong>
+                          {ev.answer}
+                          {ev.answer.length >= 200 ? "…" : ""}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  <div style={{ color: "#999" }}>暂无执行记录</div>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <div>暂无数据</div>
@@ -675,6 +898,74 @@ export default function TasksPage() {
                     </div>
                   </Card>
                 ))}
+              </>
+            )}
+
+            {summaryData.comparison_by_model && summaryData.comparison_by_model.length > 0 && (
+              <>
+                <Typography.Title level={5} style={{ marginTop: 24, color: "#fa8c16" }}>
+                  对比通用大模型
+                </Typography.Title>
+                {summaryData.comparison_by_model.map((cm) => (
+                  <Card key={cm.model_type} size="small" style={{ marginBottom: 12 }}>
+                    <Typography.Text strong>{cm.model_display_name}</Typography.Text>
+                    <span style={{ color: "#999", marginLeft: 8 }}>
+                      {cm.evaluation_count} 条评测
+                      {cm.avg_score != null ? ` · 平均分 ${cm.avg_score}` : ""}
+                    </span>
+                    <div style={{ marginTop: 8 }}>
+                      {cm.top_pros?.length > 0 && (
+                        <div>
+                          <Typography.Text type="success">优点：</Typography.Text>
+                          <ul style={{ paddingLeft: 20, margin: "4px 0 0" }}>
+                            {cm.top_pros.map((p, i) => (
+                              <li key={i}>{p.text} ×{p.count}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {cm.top_cons?.length > 0 && (
+                        <div style={{ marginTop: 8 }}>
+                          <Typography.Text type="danger">缺点：</Typography.Text>
+                          <ul style={{ paddingLeft: 20, margin: "4px 0 0" }}>
+                            {cm.top_cons.map((c, i) => (
+                              <li key={i}>{c.text} ×{c.count}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+                ))}
+              </>
+            )}
+
+            {summaryData.agent_vs_comparison && summaryData.agent_vs_comparison.length > 0 && (
+              <>
+                <Typography.Title level={5} style={{ marginTop: 16, color: "#13c2c2" }}>
+                  Agent 对比通用大模型
+                </Typography.Title>
+                <ul style={{ paddingLeft: 20 }}>
+                  {summaryData.agent_vs_comparison.map((s, i) => (
+                    <li key={i}>{s}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+
+            {summaryData.takeaways_from_comparison && summaryData.takeaways_from_comparison.length > 0 && (
+              <>
+                <Typography.Title level={5} style={{ marginTop: 16, color: "#2f54eb" }}>
+                  借鉴通用大模型的可取之处
+                </Typography.Title>
+                <Typography.Paragraph type="secondary">
+                  通用大模型回答中可供 Agent 借鉴的优点与改进方向
+                </Typography.Paragraph>
+                <ul style={{ paddingLeft: 20 }}>
+                  {summaryData.takeaways_from_comparison.map((s, i) => (
+                    <li key={i}>{s}</li>
+                  ))}
+                </ul>
               </>
             )}
 

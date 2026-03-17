@@ -29,11 +29,14 @@ class EvaluationService:
         task_run_id: str,
         dataset_version_id: str,
         agent_version_ids: list[str],
+        compare_model_ids: list[str] | None = None,
     ) -> int:
         """
-        Create one job per (testcase, agent_version) and push to Redis queue.
-        Returns count of jobs dispatched.
-        每个 job 包含：question（规范问题）、persona_question（数据集预填）、persona（Agent 人设，用于 worker 动态生成）。
+        按批次分发任务：每个 Agent 一个 batch job，每个对比模型一个 batch job。
+        - 单个 Agent 无对比：1 个 job，由单个 Worker 顺序执行所有 testcase
+        - 多 Agent 或多对比模型：多个 job，由不同 Worker 并行执行
+        total_evaluations: 总评测条数（用于进度与完成判断）
+        Returns: total_evaluations（用于 task_run.total_jobs 进度显示）
         """
         from sqlalchemy import select
         from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -46,6 +49,7 @@ class EvaluationService:
         engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         count = 0
+        compare_models = [m for m in (compare_model_ids or []) if m in ("doubao", "qwen", "deepseek")]
         async with async_session() as session:
             result = await session.execute(
                 select(Testcase).where(Testcase.dataset_version_id == dataset_version_id)
@@ -66,28 +70,98 @@ class EvaluationService:
                         pass
                 av_configs[av.id] = cfg
 
+            # 总评测条数（用于 task_run 完成判断）
+            total_evaluations = len(testcases) * len(agent_version_ids) + len(testcases) * len(compare_models)
+            default_persona = av_configs.get(agent_version_ids[0], {}) if agent_version_ids else {}
+
             r = await self._get_redis()
-            total_jobs = len(testcases) * len(agent_version_ids)
-            for tc in testcases:
-                for av_id in agent_version_ids:
-                    cfg = av_configs.get(av_id, {})
-                    job = {
-                        "id": f"job_{uuid.uuid4().hex[:12]}",
-                        "task_id": task_id,
-                        "task_run_id": task_run_id,
-                        "total_jobs": total_jobs,
+
+            # 每个 Agent 一个 batch job，该 Worker 顺序执行该 Agent 的全部 testcase
+            for av_id in agent_version_ids:
+                cfg = av_configs.get(av_id, {})
+                testcase_items = [
+                    {
                         "testcase_id": tc.id,
-                        "agent_version_id": av_id,
                         "question": tc.question or "",
                         "persona_question": tc.persona_question or None,
                         "persona": cfg.get("persona"),
                         "key_points": tc.key_points,
                     }
-                    await r.rpush(EVALUATION_QUEUE, json.dumps(job, ensure_ascii=False))
-                    count += 1
+                    for tc in testcases
+                ]
+                job = {
+                    "id": f"job_{uuid.uuid4().hex[:12]}",
+                    "job_type": "agent_batch",
+                    "task_id": task_id,
+                    "task_run_id": task_run_id,
+                    "total_evaluations": total_evaluations,
+                    "agent_version_id": av_id,
+                    "testcases": testcase_items,
+                }
+                await r.rpush(EVALUATION_QUEUE, json.dumps(job, ensure_ascii=False))
+                count += 1
+
+            # 每个对比模型一个 batch job，由不同 Worker 并行执行
+            for model_type in compare_models:
+                testcase_items = [
+                    {
+                        "testcase_id": tc.id,
+                        "question": tc.question or "",
+                        "persona_question": tc.persona_question or None,
+                        "persona": default_persona.get("persona"),
+                        "key_points": tc.key_points,
+                    }
+                    for tc in testcases
+                ]
+                job = {
+                    "id": f"job_{uuid.uuid4().hex[:12]}",
+                    "job_type": "comparison_batch",
+                    "task_id": task_id,
+                    "task_run_id": task_run_id,
+                    "total_evaluations": total_evaluations,
+                    "compare_model": model_type,
+                    "testcases": testcase_items,
+                }
+                await r.rpush(EVALUATION_QUEUE, json.dumps(job, ensure_ascii=False))
+                count += 1
+
             if count > 0:
                 import logging
                 logging.getLogger("agentarena").info(
-                    f"[Dispatch] task_id={task_id} pushed {count} jobs to {EVALUATION_QUEUE}"
+                    f"[Dispatch] task_id={task_id} 分发 {count} 个 batch job（每个 Agent/模型独立批次）"
                 )
-        return count
+        return total_evaluations
+
+    async def remove_jobs_for_task(self, task_id: str) -> int:
+        """
+        从 Redis 队列中移除该任务对应的所有 job。
+        删除任务时调用，避免 Worker 继续处理已删除任务的 job。
+        Returns: 移除的 job 数量。
+        """
+        r = await self._get_redis()
+        try:
+            all_jobs = await r.lrange(EVALUATION_QUEUE, 0, -1)
+        except Exception:
+            return 0
+        remaining: list[str] = []
+        removed = 0
+        for job_str in all_jobs or []:
+            try:
+                job = json.loads(job_str)
+                if job.get("task_id") == task_id:
+                    removed += 1
+                else:
+                    remaining.append(job_str)
+            except (json.JSONDecodeError, TypeError):
+                remaining.append(job_str)  # 无法解析的保留
+        if removed > 0:
+            pipe = r.pipeline()
+            pipe.delete(EVALUATION_QUEUE)
+            if remaining:
+                pipe.rpush(EVALUATION_QUEUE, *remaining)
+            await pipe.execute()
+            import logging
+            logging.getLogger("agentarena").info(
+                f"[Queue] task_id={task_id} removed {removed} jobs from {EVALUATION_QUEUE}"
+            )
+        return removed

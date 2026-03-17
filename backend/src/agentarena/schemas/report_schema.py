@@ -116,6 +116,17 @@ class AgentSummary(BaseModel):
     optimization: OptimizationByCategory
 
 
+class ComparisonModelSummary(BaseModel):
+    """单通用大模型（DouBao/Qwen/DeepSeek）的对比总结。"""
+
+    model_type: str  # doubao | qwen | deepseek
+    model_display_name: str  # 豆包 | 通义千问 | DeepSeek
+    evaluation_count: int
+    avg_score: Optional[float] = None
+    top_pros: list[TopItem] = []
+    top_cons: list[TopItem] = []
+
+
 class TaskSummaryReportResponse(BaseModel):
     """任务总结报告（整批次汇总）。"""
 
@@ -128,3 +139,7 @@ class TaskSummaryReportResponse(BaseModel):
     overall_top_cons: list[TopItem] = []
     overall_optimization: OptimizationByCategory | None = None
     agent_development_suggestions: list[str] = []  # Agent 开发优化建议汇总
+    # 对比通用大模型
+    comparison_by_model: list[ComparisonModelSummary] = []  # 各对比模型的评测总结
+    agent_vs_comparison: list[str] = []  # Agent 对比通用大模型的优缺点概括
+    takeaways_from_comparison: list[str] = []  # 借鉴通用大模型回答的可取之处

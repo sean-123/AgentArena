@@ -196,3 +196,57 @@ def build_summary(
         "by_agent": agent_summaries,
         "overall": overall,
     }
+
+
+MODEL_DISPLAY_NAMES = {"doubao": "豆包", "qwen": "通义千问", "deepseek": "DeepSeek"}
+
+
+def build_comparison_summary(
+    comparison_ev_list: list[dict[str, Any]],
+    top_n: int = 5,
+) -> dict[str, Any]:
+    """
+    根据对比评测列表构建总结。
+    comparison_ev_list: 每条含 model_type, pros, cons, avg_score
+    """
+    from collections import Counter
+
+    by_model: dict[str, dict[str, Any]] = {}
+    all_comp_pros: list[str] = []
+    for ev in comparison_ev_list:
+        mt = ev.get("model_type", "")
+        if mt not in by_model:
+            by_model[mt] = {"pros_counter": Counter(), "cons_counter": Counter(), "scores": []}
+        pros_items = _split_bullet_items(ev.get("pros"))
+        cons_items = _split_bullet_items(ev.get("cons"))
+        for p in pros_items:
+            by_model[mt]["pros_counter"][p] += 1
+            all_comp_pros.append(p)
+        for c in cons_items:
+            by_model[mt]["cons_counter"][c] += 1
+        avg = ev.get("avg_score")
+        if avg is not None:
+            by_model[mt]["scores"].append(float(avg))
+
+    model_summaries: list[dict[str, Any]] = []
+    for mt, data in by_model.items():
+        scores = data.get("scores", [])
+        avg_score = sum(scores) / len(scores) if scores else None
+        top_p = data["pros_counter"].most_common(top_n)
+        top_c = data["cons_counter"].most_common(top_n)
+        model_summaries.append({
+            "model_type": mt,
+            "model_display_name": MODEL_DISPLAY_NAMES.get(mt, mt),
+            "evaluation_count": len(pros_items) if (pros_items := list(data["pros_counter"].elements())) else sum(data["pros_counter"].values()),
+        })
+        # Fix: evaluation_count should be number of evaluations, not pros count
+        ev_count = sum(1 for e in comparison_ev_list if e.get("model_type") == mt)
+        model_summaries[-1]["evaluation_count"] = ev_count
+        model_summaries[-1]["avg_score"] = avg_score
+        model_summaries[-1]["top_pros"] = [{"text": t, "count": c} for t, c in top_p]
+        model_summaries[-1]["top_cons"] = [{"text": t, "count": c} for t, c in top_c]
+
+    # 借鉴通用大模型的可取之处：取各模型高频优点，去重
+    pros_counter = Counter(all_comp_pros)
+    takeaways = [t for t, _ in pros_counter.most_common(10)]
+    return {"by_model": model_summaries, "takeaways": takeaways}
