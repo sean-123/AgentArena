@@ -1,9 +1,33 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Table, Card, Select, message, Spin } from "antd";
+import React, { useEffect, useState } from "react";
+import { Table, Card, Select, message, Spin, Typography } from "antd";
+import { FileTextOutlined } from "@ant-design/icons";
 import MainLayout from "@/components/MainLayout";
 import { apiGet } from "@/api/client";
+
+interface TopItem {
+  text: string;
+  count: number;
+}
+
+interface OptimizationByCategory {
+  answer_modification: string[];
+  prompt_optimization: string[];
+  rag_optimization: string[];
+  agent_development?: string[];
+}
+
+interface SummaryReport {
+  task_id: string;
+  task_run_id: string | null;
+  task_name: string;
+  total_evaluations: number;
+  overall_top_pros: TopItem[];
+  overall_top_cons: TopItem[];
+  overall_optimization: OptimizationByCategory | null;
+  agent_development_suggestions: string[];
+}
 
 const T = {
   loadFailed: (() => String.fromCodePoint(0x52a0, 0x8f7d, 0x5931, 0x8d25))(),
@@ -81,6 +105,8 @@ export default function LeaderboardPage() {
   const [expandedRowKeys, setExpandedRowKeys] = useState<React.Key[]>([]);
   const [detailCache, setDetailCache] = useState<Record<string, EvaluationWithScore[]>>({});
   const [detailLoading, setDetailLoading] = useState<Record<string, boolean>>({});
+  const [summaryData, setSummaryData] = useState<SummaryReport | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
 
   const loadLeaderboard = async () => {
     try {
@@ -144,6 +170,25 @@ export default function LeaderboardPage() {
     setExpandedRowKeys([]);
     setDetailCache({});
     loadLeaderboard();
+  }, [taskFilter, runFilter]);
+
+  // 筛选任务时加载该任务对应批次的总结报告
+  useEffect(() => {
+    if (!taskFilter || taskFilter === "" || taskFilter === "__all__") {
+      setSummaryData(null);
+      return;
+    }
+    setSummaryLoading(true);
+    setSummaryData(null);
+    const params = new URLSearchParams({ task_id: taskFilter });
+    if (runFilter && runFilter !== "") params.set("task_run_id", runFilter);
+    apiGet<SummaryReport>(`/api/reports/summary?${params}`)
+      .then(setSummaryData)
+      .catch((e) => {
+        setSummaryData(null);
+        message.error("加载总结报告失败: " + (e as Error).message);
+      })
+      .finally(() => setSummaryLoading(false));
   }, [taskFilter, runFilter]);
 
   const onExpand = (expanded: boolean, record: LeaderboardEntry) => {
@@ -211,20 +256,96 @@ export default function LeaderboardPage() {
     );
   };
 
+  const summaryContent = !taskFilter ? (
+    <div style={{ padding: "16px 20px", background: "#f6ffed", border: "1px solid #b7eb8f", borderRadius: 8, color: "#389e0d" }}>
+      请从右侧「筛选任务」下拉框中选择一个具体任务（勿选「全部任务」），即可查看该任务的批次总结报告
+    </div>
+  ) : summaryLoading ? (
+    <div style={{ padding: 24, textAlign: "center" }}><Spin tip="加载总结报告中..." /></div>
+  ) : summaryData ? (
+    <div style={{ maxHeight: 400, overflow: "auto" }}>
+      <Typography.Paragraph type="secondary">整批次汇总：高频优缺点、调整建议、Agent 开发优化建议</Typography.Paragraph>
+      {summaryData.overall_top_pros?.length > 0 && (
+        <><Typography.Text strong style={{ color: "#52c41a" }}>高频优点 </Typography.Text>
+        <ul style={{ paddingLeft: 20, margin: "4px 0 12px" }}>
+          {summaryData.overall_top_pros.map((p, i) => (
+            <li key={i}>{p.text} <Typography.Text type="secondary">×{p.count}</Typography.Text></li>
+          ))}
+        </ul></>
+      )}
+      {summaryData.overall_top_cons?.length > 0 && (
+        <><Typography.Text strong style={{ color: "#ff4d4f" }}>高频缺点 </Typography.Text>
+        <ul style={{ paddingLeft: 20, margin: "4px 0 12px" }}>
+          {summaryData.overall_top_cons.map((c, i) => (
+            <li key={i}>{c.text} <Typography.Text type="secondary">×{c.count}</Typography.Text></li>
+          ))}
+        </ul></>
+      )}
+      {summaryData.overall_optimization &&
+        (summaryData.overall_optimization.answer_modification?.length > 0 ||
+          summaryData.overall_optimization.prompt_optimization?.length > 0 ||
+          summaryData.overall_optimization.rag_optimization?.length > 0 ||
+          summaryData.overall_optimization.agent_development?.length > 0) && (
+        <>
+          <Typography.Text strong style={{ color: "#1890ff" }}>调整建议汇总 </Typography.Text>
+          {summaryData.overall_optimization.answer_modification?.map((s, i) => (
+            <div key={i} style={{ marginTop: 8 }}><Typography.Text type="secondary">回答修改：</Typography.Text>
+              <ul style={{ paddingLeft: 20, margin: "2px 0" }}><li>{s}</li></ul>
+            </div>
+          ))}
+          {summaryData.overall_optimization.prompt_optimization?.map((s, i) => (
+            <div key={i} style={{ marginTop: 8 }}><Typography.Text type="secondary">提示词：</Typography.Text>
+              <ul style={{ paddingLeft: 20, margin: "2px 0" }}><li>{s}</li></ul>
+            </div>
+          ))}
+          {summaryData.overall_optimization.rag_optimization?.map((s, i) => (
+            <div key={i} style={{ marginTop: 8 }}><Typography.Text type="secondary">RAG/知识库：</Typography.Text>
+              <ul style={{ paddingLeft: 20, margin: "2px 0" }}><li>{s}</li></ul>
+            </div>
+          ))}
+          {summaryData.overall_optimization.agent_development?.map((s, i) => (
+            <div key={i} style={{ marginTop: 8 }}><Typography.Text type="secondary">Agent 架构/模型：</Typography.Text>
+              <ul style={{ paddingLeft: 20, margin: "2px 0" }}><li>{s}</li></ul>
+            </div>
+          ))}
+        </>
+      )}
+      {summaryData.agent_development_suggestions?.length > 0 && (
+        <><Typography.Title level={5} style={{ marginTop: 16, color: "#722ed1" }}>Agent 开发优化建议</Typography.Title>
+        <ul style={{ paddingLeft: 20, margin: "4px 0 0" }}>
+          {summaryData.agent_development_suggestions.map((s, i) => (
+            <li key={i}>{s}</li>
+          ))}
+        </ul></>
+      )}
+      {summaryData.total_evaluations === 0 && (
+        <div style={{ color: "#999", padding: 24, textAlign: "center" }}>暂无评测数据，无法生成总结报告</div>
+      )}
+    </div>
+  ) : (
+    <div style={{ color: "#999", padding: 24, textAlign: "center" }}>暂无总结数据</div>
+  );
+
   return (
     <MainLayout>
+      <div>
       <Card
-        title={T.leaderboard}
+        title={
+          <span>
+            <FileTextOutlined style={{ marginRight: 8 }} />
+            批次总结报告
+          </span>
+        }
         extra={
           <span style={{ display: "flex", gap: 8 }}>
             <Select
               placeholder={T.filterTask}
               allowClear
               style={{ width: 200 }}
-              value={taskFilter}
-              onChange={setTaskFilter}
+              value={taskFilter || undefined}
+              onChange={(v) => setTaskFilter(v === "" || v === "__all__" ? undefined : v)}
               options={[
-                { value: "", label: T.allTasks },
+                { value: "__all__", label: T.allTasks },
                 ...tasks.map((t) => ({ value: t.id, label: t.name })),
               ]}
             />
@@ -246,7 +367,9 @@ export default function LeaderboardPage() {
             )}
           </span>
         }
+        style={{ marginBottom: 16 }}
       >
+        {summaryContent}
         <Table
           loading={loading}
           dataSource={data}
@@ -291,6 +414,7 @@ export default function LeaderboardPage() {
           ]}
         />
       </Card>
+      </div>
     </MainLayout>
   );
 }

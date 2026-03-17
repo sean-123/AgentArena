@@ -25,6 +25,8 @@ Return JSON:
 {{"correctness": 1-5, "completeness": 1-5, "clarity": 1-5, "hallucination": 1-5, "pros": "2-3 bullet points", "cons": "2-3 bullet points", "optimization": "2-3 suggestions"}}
 
 重要：pros、cons、optimization 必须全部使用中文回答。
+optimization 建议可包含：1) 回答应如何修改；2) 若与 Agent 提示词/指令相关，注明「提示词」；3) 若与 RAG/检索/知识库相关，注明「RAG」；4) 若与 Agent 架构/模型/推理/工具/开发相关，可注明「架构」「模型」「优化」等关键词。
+optimization 建议尽量明确类型：若涉及回答修改则直接写出；若涉及提示词/system prompt/指令优化则显式写出「提示词」；若涉及 RAG/检索/知识库则写出「RAG」「检索」；若涉及模型选择、温度、思维链、工具调用、Agent 设计等开发层面优化，则写出相关关键词，以便后续汇总为 Agent 开发优化建议。
 """
 
 

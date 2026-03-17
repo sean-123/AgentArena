@@ -16,8 +16,10 @@ import {
   Descriptions,
   Spin,
   Typography,
+  Collapse,
+  Tag,
 } from "antd";
-import { PlusOutlined, PlayCircleOutlined, EyeOutlined } from "@ant-design/icons";
+import { PlusOutlined, PlayCircleOutlined, EyeOutlined, FileTextOutlined } from "@ant-design/icons";
 import MainLayout from "@/components/MainLayout";
 import { apiGet, apiPost, apiDelete } from "@/api/client";
 
@@ -51,6 +53,39 @@ interface TaskDetail {
   }>;
 }
 
+interface TopItem {
+  text: string;
+  count: number;
+}
+
+interface OptimizationByCategory {
+  answer_modification: string[];
+  prompt_optimization: string[];
+  rag_optimization: string[];
+  agent_development?: string[];
+}
+
+interface AgentSummary {
+  agent_name: string;
+  agent_version_id: string;
+  evaluation_count: number;
+  top_pros: TopItem[];
+  top_cons: TopItem[];
+  optimization: OptimizationByCategory;
+}
+
+interface SummaryReport {
+  task_id: string;
+  task_run_id: string | null;
+  task_name: string;
+  total_evaluations: number;
+  by_agent: AgentSummary[];
+  overall_top_pros: TopItem[];
+  overall_top_cons: TopItem[];
+  overall_optimization: OptimizationByCategory | null;
+  agent_development_suggestions?: string[];
+}
+
 interface Dataset {
   id: string;
   name: string;
@@ -71,6 +106,9 @@ export default function TasksPage() {
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
   const [detail, setDetail] = useState<TaskDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [summaryModalOpen, setSummaryModalOpen] = useState(false);
+  const [summaryData, setSummaryData] = useState<SummaryReport | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [form] = Form.useForm();
 
@@ -201,7 +239,27 @@ export default function TasksPage() {
     setDetailDrawerOpen(false);
     setDetailTaskId(null);
     setDetail(null);
+    setSummaryModalOpen(false);
+    setSummaryData(null);
     loadTasks();
+  };
+
+  const openSummaryReport = async () => {
+    if (!detailTaskId || !detail?.latest_run?.id) return;
+    setSummaryModalOpen(true);
+    setSummaryData(null);
+    setSummaryLoading(true);
+    try {
+      const data = await apiGet<SummaryReport>(
+        `/api/reports/summary?task_id=${detailTaskId}&task_run_id=${detail.latest_run.id}`
+      );
+      setSummaryData(data);
+    } catch (e) {
+      message.error("加载总结报告失败: " + (e as Error).message);
+      setSummaryModalOpen(false);
+    } finally {
+      setSummaryLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -351,6 +409,17 @@ export default function TasksPage() {
                       {detail.progress?.completed ?? 0} / {detail.progress?.total ?? 0} 条
                     </span>
                   </Descriptions.Item>
+                  {detail.task.status === "completed" && (
+                    <Descriptions.Item>
+                      <Button
+                        type="primary"
+                        icon={<FileTextOutlined />}
+                        onClick={openSummaryReport}
+                      >
+                        查看总结报告
+                      </Button>
+                    </Descriptions.Item>
+                  )}
                 </Descriptions>
               </>
             )}
@@ -408,6 +477,215 @@ export default function TasksPage() {
           <div>暂无数据</div>
         )}
       </Drawer>
+
+      <Modal
+        title={summaryData ? `总结报告 - ${summaryData.task_name}` : "总结报告"}
+        open={summaryModalOpen}
+        onCancel={() => {
+          setSummaryModalOpen(false);
+          setSummaryData(null);
+        }}
+        footer={null}
+        width={720}
+      >
+        {summaryLoading ? (
+          <div style={{ padding: 48, textAlign: "center" }}>
+            <Spin tip="生成报告中..." />
+          </div>
+        ) : summaryData ? (
+          <div style={{ maxHeight: "70vh", overflow: "auto" }}>
+            <Typography.Paragraph type="secondary">
+              共 {summaryData.total_evaluations} 条评测，按 Agent 聚合优缺点与优化建议
+            </Typography.Paragraph>
+
+            {summaryData.overall_top_pros?.length > 0 && (
+              <>
+                <Typography.Title level={5} style={{ marginTop: 16, color: "#52c41a" }}>
+                  全局高频优点
+                </Typography.Title>
+                <ul style={{ paddingLeft: 20, marginBottom: 0 }}>
+                  {summaryData.overall_top_pros.map((p, i) => (
+                    <li key={i}>
+                      {p.text}
+                      <span style={{ color: "#999", marginLeft: 8 }}>×{p.count}</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+
+            {summaryData.overall_top_cons?.length > 0 && (
+              <>
+                <Typography.Title level={5} style={{ marginTop: 16, color: "#ff4d4f" }}>
+                  全局高频缺点
+                </Typography.Title>
+                <ul style={{ paddingLeft: 20, marginBottom: 0 }}>
+                  {summaryData.overall_top_cons.map((c, i) => (
+                    <li key={i}>
+                      {c.text}
+                      <span style={{ color: "#999", marginLeft: 8 }}>×{c.count}</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+
+            {summaryData.overall_optimization &&
+              (summaryData.overall_optimization.answer_modification?.length > 0 ||
+                summaryData.overall_optimization.prompt_optimization?.length > 0 ||
+                summaryData.overall_optimization.rag_optimization?.length > 0 ||
+                summaryData.overall_optimization.agent_development?.length > 0) && (
+              <>
+                <Typography.Title level={5} style={{ marginTop: 16, color: "#1890ff" }}>
+                  优化建议汇总
+                </Typography.Title>
+                {summaryData.overall_optimization.answer_modification?.length > 0 && (
+                  <>
+                    <Typography.Text strong style={{ display: "block", marginTop: 8 }}>
+                      回答修改建议
+                    </Typography.Text>
+                    <ul style={{ paddingLeft: 20 }}>
+                      {summaryData.overall_optimization.answer_modification.map((s, i) => (
+                        <li key={i}>{s}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {summaryData.overall_optimization.prompt_optimization?.length > 0 && (
+                  <>
+                    <Typography.Text strong style={{ display: "block", marginTop: 8 }}>
+                      提示词优化
+                    </Typography.Text>
+                    <ul style={{ paddingLeft: 20 }}>
+                      {summaryData.overall_optimization.prompt_optimization.map((s, i) => (
+                        <li key={i}>{s}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {summaryData.overall_optimization.rag_optimization?.length > 0 && (
+                  <>
+                    <Typography.Text strong style={{ display: "block", marginTop: 8 }}>
+                      RAG 相关优化
+                    </Typography.Text>
+                    <ul style={{ paddingLeft: 20 }}>
+                      {summaryData.overall_optimization.rag_optimization.map((s, i) => (
+                        <li key={i}>{s}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {summaryData.overall_optimization.agent_development?.length > 0 && (
+                  <>
+                    <Typography.Text strong style={{ display: "block", marginTop: 8 }}>
+                      Agent 架构/模型优化
+                    </Typography.Text>
+                    <ul style={{ paddingLeft: 20 }}>
+                      {summaryData.overall_optimization.agent_development.map((s, i) => (
+                        <li key={i}>{s}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </>
+            )}
+
+            {summaryData.agent_development_suggestions?.length > 0 && (
+              <>
+                <Typography.Title level={5} style={{ marginTop: 16, color: "#722ed1" }}>
+                  Agent 开发优化建议
+                </Typography.Title>
+                <Typography.Paragraph type="secondary">
+                  基于整批次评测提炼的开发方向与优化建议
+                </Typography.Paragraph>
+                <ul style={{ paddingLeft: 20 }}>
+                  {summaryData.agent_development_suggestions.map((s, i) => (
+                    <li key={i}>{s}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+
+            {summaryData.by_agent?.length > 0 && (
+              <>
+                <Typography.Title level={5} style={{ marginTop: 24 }}>
+                  各 Agent 详情
+                </Typography.Title>
+                {summaryData.by_agent.map((ag) => (
+                  <Card key={ag.agent_version_id} size="small" style={{ marginBottom: 12 }}>
+                    <Typography.Text strong>{ag.agent_name}</Typography.Text>
+                    <span style={{ color: "#999", marginLeft: 8 }}>
+                      {ag.evaluation_count} 条评测
+                    </span>
+                    <div style={{ marginTop: 8 }}>
+                      {ag.top_pros?.length > 0 && (
+                        <div>
+                          <Typography.Text type="success">优点：</Typography.Text>
+                          <ul style={{ paddingLeft: 20, margin: "4px 0 0" }}>
+                            {ag.top_pros.map((p, i) => (
+                              <li key={i}>
+                                {p.text}
+                                <span style={{ color: "#999" }}> ×{p.count}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {ag.top_cons?.length > 0 && (
+                        <div style={{ marginTop: 8 }}>
+                          <Typography.Text type="danger">缺点：</Typography.Text>
+                          <ul style={{ paddingLeft: 20, margin: "4px 0 0" }}>
+                            {ag.top_cons.map((c, i) => (
+                              <li key={i}>
+                                {c.text}
+                                <span style={{ color: "#999" }}> ×{c.count}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {(ag.optimization?.answer_modification?.length > 0 ||
+                        ag.optimization?.prompt_optimization?.length > 0 ||
+                        ag.optimization?.rag_optimization?.length > 0 ||
+                        ag.optimization?.agent_development?.length > 0) && (
+                        <div style={{ marginTop: 8 }}>
+                          <Typography.Text>优化：</Typography.Text>
+                          {ag.optimization.answer_modification?.map((s, i) => (
+                            <div key={`a-${i}`} style={{ marginLeft: 8, fontSize: 13 }}>
+                              · {s}
+                            </div>
+                          ))}
+                          {ag.optimization.prompt_optimization?.map((s, i) => (
+                            <div key={`p-${i}`} style={{ marginLeft: 8, fontSize: 13 }}>
+                              · [提示词] {s}
+                            </div>
+                          ))}
+                          {ag.optimization.rag_optimization?.map((s, i) => (
+                            <div key={`r-${i}`} style={{ marginLeft: 8, fontSize: 13 }}>
+                              · [RAG] {s}
+                            </div>
+                          ))}
+                          {ag.optimization.agent_development?.map((s, i) => (
+                            <div key={`d-${i}`} style={{ marginLeft: 8, fontSize: 13 }}>
+                              · [Agent 开发] {s}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+                ))}
+              </>
+            )}
+
+            {summaryData.total_evaluations === 0 && (
+              <div style={{ color: "#999", padding: 24, textAlign: "center" }}>
+                暂无评测数据，无法生成总结报告
+              </div>
+            )}
+          </div>
+        ) : null}
+      </Modal>
     </MainLayout>
   );
 }
