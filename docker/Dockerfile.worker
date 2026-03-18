@@ -7,6 +7,8 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 # Context: AgentArena root
 COPY backend/pyproject.toml backend/README.md backend/
 COPY backend/src backend/src
+# 默认配置：启动时可用 -e 覆盖，未覆盖则使用此 .env
+COPY backend/.env.example backend/.env
 
 WORKDIR /app/backend
 RUN uv sync --frozen 2>/dev/null || uv sync

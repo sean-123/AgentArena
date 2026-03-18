@@ -760,7 +760,7 @@ export default function TasksPage() {
               </div>
             )}
 
-            {summaryData.overall_top_pros?.length > 0 && (
+            {(summaryData.overall_top_pros?.length ?? 0) > 0 && (
               <>
                 <Typography.Title level={5} style={{ marginTop: 16, color: "#52c41a" }}>
                   全局高频优点
@@ -786,7 +786,7 @@ export default function TasksPage() {
               </>
             )}
 
-            {summaryData.overall_top_cons?.length > 0 && (
+            {(summaryData.overall_top_cons?.length ?? 0) > 0 && (
               <>
                 <Typography.Title level={5} style={{ marginTop: 16, color: "#ff4d4f" }}>
                   全局高频缺点
@@ -813,15 +813,15 @@ export default function TasksPage() {
             )}
 
             {summaryData.overall_optimization &&
-              (summaryData.overall_optimization.answer_modification?.length > 0 ||
-                summaryData.overall_optimization.prompt_optimization?.length > 0 ||
-                summaryData.overall_optimization.rag_optimization?.length > 0 ||
-                summaryData.overall_optimization.agent_development?.length > 0) && (
+              ((summaryData.overall_optimization.answer_modification?.length ?? 0) > 0 ||
+                (summaryData.overall_optimization.prompt_optimization?.length ?? 0) > 0 ||
+                (summaryData.overall_optimization.rag_optimization?.length ?? 0) > 0 ||
+                (summaryData.overall_optimization.agent_development?.length ?? 0) > 0) && (
               <>
                 <Typography.Title level={5} style={{ marginTop: 16, color: "#1890ff" }}>
                   优化建议汇总
                 </Typography.Title>
-                {summaryData.overall_optimization.answer_modification?.length > 0 && (
+                {(summaryData.overall_optimization.answer_modification?.length ?? 0) > 0 && (
                   <>
                     <Typography.Text strong style={{ display: "block", marginTop: 8 }}>
                       回答修改建议
@@ -833,7 +833,7 @@ export default function TasksPage() {
                     </ul>
                   </>
                 )}
-                {summaryData.overall_optimization.prompt_optimization?.length > 0 && (
+                {(summaryData.overall_optimization.prompt_optimization?.length ?? 0) > 0 && (
                   <>
                     <Typography.Text strong style={{ display: "block", marginTop: 8 }}>
                       提示词优化
@@ -845,7 +845,7 @@ export default function TasksPage() {
                     </ul>
                   </>
                 )}
-                {summaryData.overall_optimization.rag_optimization?.length > 0 && (
+                {(summaryData.overall_optimization.rag_optimization?.length ?? 0) > 0 && (
                   <>
                     <Typography.Text strong style={{ display: "block", marginTop: 8 }}>
                       RAG 相关优化
@@ -857,13 +857,13 @@ export default function TasksPage() {
                     </ul>
                   </>
                 )}
-                {summaryData.overall_optimization.agent_development?.length > 0 && (
+                {(summaryData.overall_optimization.agent_development?.length ?? 0) > 0 && (
                   <>
                     <Typography.Text strong style={{ display: "block", marginTop: 8 }}>
                       Agent 架构/模型优化
                     </Typography.Text>
                     <ul style={{ paddingLeft: 20 }}>
-                      {summaryData.overall_optimization.agent_development.map((s, i) => (
+                      {(summaryData.overall_optimization.agent_development ?? []).map((s, i) => (
                         <li key={i}>{s}</li>
                       ))}
                     </ul>
@@ -872,7 +872,7 @@ export default function TasksPage() {
               </>
             )}
 
-            {summaryData.agent_development_suggestions?.length > 0 && (
+            {(summaryData.agent_development_suggestions?.length ?? 0) > 0 && (
               <>
                 <Typography.Title level={5} style={{ marginTop: 16, color: "#722ed1" }}>
                   Agent 开发优化建议
@@ -881,14 +881,14 @@ export default function TasksPage() {
                   基于整批次评测提炼的开发方向与优化建议
                 </Typography.Paragraph>
                 <ul style={{ paddingLeft: 20 }}>
-                  {summaryData.agent_development_suggestions.map((s, i) => (
+                  {(summaryData.agent_development_suggestions ?? []).map((s, i) => (
                     <li key={i}>{s}</li>
                   ))}
                 </ul>
               </>
             )}
 
-            {summaryData.by_agent?.length > 0 && (
+            {(summaryData.by_agent?.length ?? 0) > 0 && (
               <>
                 <Typography.Title level={5} style={{ marginTop: 24 }}>
                   各 Agent 详情
@@ -900,7 +900,7 @@ export default function TasksPage() {
                       {ag.evaluation_count} 条评测
                     </span>
                     <div style={{ marginTop: 8 }}>
-                      {ag.top_pros?.length > 0 && (
+                      {(ag.top_pros?.length ?? 0) > 0 && (
                         <div>
                           <Typography.Text type="success">优点：</Typography.Text>
                           <ul style={{ paddingLeft: 20, margin: "4px 0 0" }}>
@@ -913,7 +913,7 @@ export default function TasksPage() {
                           </ul>
                         </div>
                       )}
-                      {ag.top_cons?.length > 0 && (
+                      {(ag.top_cons?.length ?? 0) > 0 && (
                         <div style={{ marginTop: 8 }}>
                           <Typography.Text type="danger">缺点：</Typography.Text>
                           <ul style={{ paddingLeft: 20, margin: "4px 0 0" }}>
@@ -926,10 +926,10 @@ export default function TasksPage() {
                           </ul>
                         </div>
                       )}
-                      {(ag.optimization?.answer_modification?.length > 0 ||
-                        ag.optimization?.prompt_optimization?.length > 0 ||
-                        ag.optimization?.rag_optimization?.length > 0 ||
-                        ag.optimization?.agent_development?.length > 0) && (
+                      {((ag.optimization?.answer_modification?.length ?? 0) > 0 ||
+                        (ag.optimization?.prompt_optimization?.length ?? 0) > 0 ||
+                        (ag.optimization?.rag_optimization?.length ?? 0) > 0 ||
+                        (ag.optimization?.agent_development?.length ?? 0) > 0) && (
                         <div style={{ marginTop: 8 }}>
                           <Typography.Text>优化：</Typography.Text>
                           {ag.optimization.answer_modification?.map((s, i) => (
@@ -973,7 +973,7 @@ export default function TasksPage() {
                       {cm.avg_score != null ? ` · 平均分 ${cm.avg_score}` : ""}
                     </span>
                     <div style={{ marginTop: 8 }}>
-                      {cm.top_pros?.length > 0 && (
+                      {(cm.top_pros?.length ?? 0) > 0 && (
                         <div>
                           <Typography.Text type="success">优点：</Typography.Text>
                           <ul style={{ paddingLeft: 20, margin: "4px 0 0" }}>
@@ -983,7 +983,7 @@ export default function TasksPage() {
                           </ul>
                         </div>
                       )}
-                      {cm.top_cons?.length > 0 && (
+                      {(cm.top_cons?.length ?? 0) > 0 && (
                         <div style={{ marginTop: 8 }}>
                           <Typography.Text type="danger">缺点：</Typography.Text>
                           <ul style={{ paddingLeft: 20, margin: "4px 0 0" }}>

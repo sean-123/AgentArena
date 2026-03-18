@@ -282,10 +282,10 @@ export default function LeaderboardPage() {
         </ul></>
       )}
       {summaryData.overall_optimization &&
-        (summaryData.overall_optimization.answer_modification?.length > 0 ||
-          summaryData.overall_optimization.prompt_optimization?.length > 0 ||
-          summaryData.overall_optimization.rag_optimization?.length > 0 ||
-          summaryData.overall_optimization.agent_development?.length > 0) && (
+        ((summaryData.overall_optimization.answer_modification?.length ?? 0) > 0 ||
+          (summaryData.overall_optimization.prompt_optimization?.length ?? 0) > 0 ||
+          (summaryData.overall_optimization.rag_optimization?.length ?? 0) > 0 ||
+          (summaryData.overall_optimization.agent_development?.length ?? 0) > 0) && (
         <>
           <Typography.Text strong style={{ color: "#1890ff" }}>调整建议汇总 </Typography.Text>
           {summaryData.overall_optimization.answer_modification?.map((s, i) => (

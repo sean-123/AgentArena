@@ -162,6 +162,65 @@ cd AgentArena/docker
 docker compose up -d
 ```
 
+**Docker 镜像配置说明**：backend 与 worker 镜像内已内置 `.env.example` 作为默认配置。启动容器时可通过 `-e` 或 `environment:` 传入环境变量覆盖默认值；未传入的项将使用镜像内的默认配置。
+
+```bash
+# 示例：运行时覆盖数据库与 Redis
+docker run -p 8000:8000 \
+  -e AGENTARENA_DB_HOST=mysql \
+  -e AGENTARENA_DB_PASSWORD=your_password \
+  -e AGENTARENA_REDIS_URL=redis://redis:6379 \
+  your-registry/agentarena-backend:v1.0.0
+```
+
+---
+
+## Nacos 配置中心（可选）
+
+Backend 与 Worker 支持从 Nacos 读取配置。**若配置了 Nacos，则优先使用 Nacos 中的配置；未配置则沿用 .env**。
+
+### 启用 Nacos
+
+设置环境变量 `NACOS_SERVER_ADDR` 即启用：
+
+```bash
+# 必填：Nacos 服务地址
+NACOS_SERVER_ADDR=localhost:8848
+
+# 可选
+NACOS_DATA_ID=agentarena          # 配置 Data ID，默认 agentarena
+NACOS_GROUP=DEFAULT_GROUP        # 配置 Group，默认 DEFAULT_GROUP
+NACOS_NAMESPACE_ID=              # 命名空间 ID（tenant）
+NACOS_USERNAME=                  # Nacos 认证用户名
+NACOS_PASSWORD=                  # Nacos 认证密码
+NACOS_TIMEOUT=5                  # 拉取超时秒数，默认 5
+```
+
+### Nacos 配置内容格式
+
+支持 **properties** 和 **JSON** 两种格式，键名与 .env 一致（如 `AGENTARENA_DB_HOST`、`AGENTARENA_REDIS_URL` 等）：
+
+**properties 示例：**
+```properties
+AGENTARENA_DB_HOST=mysql
+AGENTARENA_DB_PASSWORD=xxx
+AGENTARENA_REDIS_URL=redis://redis:6379
+AGENTARENA_OPENAI_API_KEY=sk-xxx
+```
+
+**JSON 示例：**
+```json
+{
+  "AGENTARENA_DB_HOST": "mysql",
+  "AGENTARENA_REDIS_URL": "redis://redis:6379"
+}
+```
+
+### 配置优先级
+
+**Nacos 已配置且拉取成功**：Nacos 中的值会覆盖 .env 和启动时的环境变量。  
+**Nacos 未配置或拉取失败**：使用 .env 及现有环境变量。
+
 ---
 
 ## 环境变量详解
@@ -177,12 +236,55 @@ docker compose up -d
 | `AGENTARENA_REDIS_PORT` | Redis 端口 | `6379` |
 | `AGENTARENA_REDIS_PASSWORD` | Redis 密码（可选） | |
 | `AGENTARENA_REDIS_DB` | Redis 库号 | `0` |
+| `AGENTARENA_REDIS_URL` | Redis 完整 URL（覆盖 host/port 等） | `redis://redis:6379` |
 | `AGENTARENA_API_HOST` | API 监听地址 | `0.0.0.0` |
 | `AGENTARENA_API_PORT` | API 端口 | `8000` |
 | `AGENTARENA_OPENAI_API_KEY` | LLM API 密钥 | `sk-...` |
 | `AGENTARENA_OPENAI_BASE_URL` | LLM API 地址（可选） | 默认 OpenAI |
 | `AGENTARENA_LLM_MODEL` | LLM 模型名 | `gpt-4o-mini` |
 | `AGENT_TW_SERVICE_TOKEN` | Agent Bearer Token | 在 Agent `auth_token_env` 中引用 |
+| `NEXT_PUBLIC_API_URL` | 前端请求的后端 API 地址 | `http://localhost:8000`（Docker 内可用 `http://backend:8000`） |
+| `NACOS_SERVER_ADDR` | Nacos 服务地址（启用后优先从 Nacos 拉取配置） | `localhost:8848` |
+| `NACOS_DATA_ID` | Nacos 配置 Data ID | `agentarena` |
+| `NACOS_GROUP` | Nacos 配置 Group | `DEFAULT_GROUP` |
+| `NACOS_NAMESPACE_ID` | Nacos 命名空间 ID（可选） | |
+| `NACOS_USERNAME` / `NACOS_PASSWORD` | Nacos 认证（可选） | |
+
+---
+
+## 指定 API 路径（前端）
+
+前端通过 `NEXT_PUBLIC_API_URL` 或 `AGENTARENA_API_URL` 指定后端 API 地址，支持**构建时**和**运行时**两种方式。
+
+### 1. 构建时（本地 / `npm run dev`）
+
+在 `frontend/.env.local` 中配置：
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+### 2. 运行时（Docker 容器）
+
+启动容器时通过环境变量传入，**无需重新构建**：
+
+```bash
+docker run -p 3000:3000 \
+  -e NEXT_PUBLIC_API_URL=http://your-api-host:8000 \
+  your-registry/agentarena-frontend:v1.0.0
+```
+
+或 `docker-compose` 中为 frontend 设置：
+
+```yaml
+environment:
+  NEXT_PUBLIC_API_URL: http://backend:8000   # 同一 compose 内用服务名
+  # 或 NEXT_PUBLIC_API_URL: http://宿主机IP:8000
+```
+
+### 3. 优先级
+
+运行时环境变量 > 构建时 `NEXT_PUBLIC_API_URL` > 默认 `http://localhost:8000`。
 
 ---
 

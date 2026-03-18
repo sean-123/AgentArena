@@ -1,5 +1,18 @@
 """AgentArena FastAPI application."""
 
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# 先加载 .env（含 NACOS_SERVER_ADDR 等），再尝试 Nacos，最后 pydantic 读取 env
+load_dotenv()
+_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+if _env_path.exists():
+    load_dotenv(_env_path)
+from agentarena.core.nacos_loader import load_nacos_config_if_configured
+
+load_nacos_config_if_configured()
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI

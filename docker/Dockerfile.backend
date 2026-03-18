@@ -7,6 +7,8 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 COPY pyproject.toml README.md ./
 COPY src ./src
+# 默认配置：启动时可用 -e 覆盖，未覆盖则使用此 .env
+COPY .env.example .env
 
 WORKDIR /app
 RUN uv sync --frozen 2>/dev/null || uv sync

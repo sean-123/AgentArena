@@ -2,11 +2,15 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-COPY frontend/package*.json ./
+COPY package*.json ./
 RUN npm ci
 
-COPY frontend/ .
+COPY . .
 RUN npm run build
 
+# 运行时生成 config.js，支持启动时通过 -e NEXT_PUBLIC_API_URL 指定 API 地址
+RUN mkdir -p public && chmod +x docker-entrypoint.sh
+
 EXPOSE 3000
+ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["npm", "start"]

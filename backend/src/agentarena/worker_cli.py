@@ -15,12 +15,16 @@ from dotenv import load_dotenv
 
 import redis.asyncio as redis
 
-# 加载 .env（AGENT_TW_SERVICE_TOKEN 等），使 Authorization: Bearer 认证可用
+# 加载 .env（AGENT_TW_SERVICE_TOKEN、NACOS_SERVER_ADDR 等）
 # 优先从 cwd 加载（在 AgentArena/backend 下执行时），备选显式路径
 load_dotenv()  # cwd 下的 .env
 _env_path = Path(__file__).resolve().parent.parent.parent / ".env"
 if _env_path.exists():
     load_dotenv(_env_path)
+# 若配置了 Nacos，从 Nacos 拉取配置并覆盖 env
+from agentarena.core.nacos_loader import load_nacos_config_if_configured
+
+load_nacos_config_if_configured()
 # 启动时确认 AGENT_TW_SERVICE_TOKEN 是否已加载（调试用）
 _has_tw = bool(os.environ.get("AGENT_TW_SERVICE_TOKEN"))
 print(f"[Worker] .env 加载后 AGENT_TW_SERVICE_TOKEN={'已存在' if _has_tw else '未找到'}")
