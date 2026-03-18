@@ -65,6 +65,28 @@ def _merge_into_environ(config: dict[str, str]) -> None:
             os.environ[key] = str(value)
 
 
+def _get_nacos_access_token(base: str, username: str, password: str, timeout: float) -> str | None:
+    """
+    Nacos 启用鉴权时需先登录获取 accessToken。
+    POST /nacos/v1/auth/login，返回 accessToken 用于后续请求。
+    """
+    login_url = f"{base}/nacos/v1/auth/login"
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(
+                login_url,
+                data={"username": username, "password": password},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            token = data.get("accessToken") or data.get("token")
+            return str(token).strip() if token else None
+    except Exception as e:
+        print(f"[Nacos] 登录失败: {e}", file=sys.stderr)
+        return None
+
+
 def _fetch_config_from_nacos() -> dict[str, str] | None:
     """从 Nacos 拉取配置。失败返回 None。"""
     if not httpx:
@@ -79,24 +101,42 @@ def _fetch_config_from_nacos() -> dict[str, str] | None:
     namespace_id = os.environ.get("NACOS_NAMESPACE_ID", "").strip()
     username = os.environ.get("NACOS_USERNAME", "").strip()
     password = os.environ.get("NACOS_PASSWORD", "").strip()
+    timeout = float(os.environ.get("NACOS_TIMEOUT", "5"))
 
-    # 构建 URL：支持 http://host:port 或 host:port
+    # 构建 base URL
     if not addr.startswith(("http://", "https://")):
         addr = f"http://{addr}"
     base = addr.rstrip("/")
+
+    # Nacos 鉴权：需先登录获取 accessToken，再在请求中携带
+    # 403 通常表示 Nacos 已开启鉴权，请配置 NACOS_USERNAME 和 NACOS_PASSWORD
+    access_token: str | None = None
+    if username and password:
+        access_token = _get_nacos_access_token(base, username, password, timeout)
+        if not access_token:
+            return None
+
     url = f"{base}/nacos/v1/cs/configs?dataId={data_id}&group={group}"
     if namespace_id:
         url += f"&tenant={namespace_id}"
-
-    auth = (username, password) if username or password else None
-    timeout = float(os.environ.get("NACOS_TIMEOUT", "5"))
+    if access_token:
+        url += f"&accessToken={access_token}"
 
     try:
-        with httpx.Client(timeout=timeout, auth=auth) as client:
+        with httpx.Client(timeout=timeout) as client:
             resp = client.get(url)
             resp.raise_for_status()
             content = resp.text
             return _parse_config_content(content)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 403:
+            print(
+                "[Nacos] 拉取配置失败 403：Nacos 已启用鉴权，请配置 NACOS_USERNAME 和 NACOS_PASSWORD",
+                file=sys.stderr,
+            )
+        else:
+            print(f"[Nacos] 拉取配置失败: {e}", file=sys.stderr)
+        return None
     except Exception as e:
         print(f"[Nacos] 拉取配置失败: {e}", file=sys.stderr)
         return None
