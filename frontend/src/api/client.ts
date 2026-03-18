@@ -1,16 +1,29 @@
-/** 获取 API 根路径：优先运行时配置（容器启动时 -e NEXT_PUBLIC_API_URL），其次构建时 NEXT_PUBLIC_API_URL，最后默认值 */
+/**
+ * API 请求使用同源路径，由 Next.js rewrites 代理到后端。
+ * 浏览器请求 /api/* -> Next.js 转发到 NEXT_PUBLIC_API_URL/api/*
+ * 只需访问前端地址（如 http://10.2.1.16:3000），无需配置可被浏览器直连的后端地址。
+ */
 function getApiBase(): string {
-  if (typeof window !== "undefined") {
-    const cfg = (window as { __AGENTARENA_CONFIG__?: { apiUrl?: string } }).__AGENTARENA_CONFIG__;
-    if (cfg?.apiUrl) return cfg.apiUrl.replace(/\/$/, ""); // 去掉末尾斜杠
+  return "";
+}
+
+function _formatFetchError(e: unknown, path: string): string {
+  const msg = (e as Error).message || String(e);
+  if (msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("Load failed")) {
+    return `请求失败: 无法连接后端。请检查后端是否已启动，以及 NEXT_PUBLIC_API_URL 是否配置正确`;
   }
-  return (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
+  return msg;
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${getApiBase()}${path.startsWith("/") ? path : "/" + path}`);
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  const url = `${getApiBase()}${path.startsWith("/") ? path : "/" + path}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  } catch (e) {
+    throw new Error(_formatFetchError(e, path));
+  }
 }
 
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {

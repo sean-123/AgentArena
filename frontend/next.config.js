@@ -12,6 +12,7 @@ const nextConfig = {
     "rc-tree",
     "rc-table",
   ],
+  // 代理由 pages/api/[[...path]].ts 实现，每次请求读取运行时的 NEXT_PUBLIC_API_URL
 };
 
 module.exports = nextConfig;

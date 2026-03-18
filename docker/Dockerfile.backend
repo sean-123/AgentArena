@@ -14,4 +14,7 @@ WORKDIR /app
 RUN uv sync --frozen 2>/dev/null || uv sync
 
 EXPOSE 8000
-CMD ["uv", "run", "uvicorn", "agentarena.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 禁用 Python 输出缓冲，确保日志即时输出到 docker logs
+ENV PYTHONUNBUFFERED=1
+# --log-level info：输出请求日志；--access-log：记录每次 HTTP 请求
+CMD ["uv", "run", "uvicorn", "agentarena.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info", "--access-log"]

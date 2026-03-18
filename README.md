@@ -243,7 +243,7 @@ AGENTARENA_OPENAI_API_KEY=sk-xxx
 | `AGENTARENA_OPENAI_BASE_URL` | LLM API 地址（可选） | 默认 OpenAI |
 | `AGENTARENA_LLM_MODEL` | LLM 模型名 | `gpt-4o-mini` |
 | `AGENT_TW_SERVICE_TOKEN` | Agent Bearer Token | 在 Agent `auth_token_env` 中引用 |
-| `NEXT_PUBLIC_API_URL` | 前端请求的后端 API 地址 | `http://localhost:8000`（Docker 内可用 `http://backend:8000`） |
+| `AGENTARENA_API_URL` | 前端代理目标地址（API Route 转发目标） | `http://10.2.1.16:31867` 或 `http://backend:8000` |
 | `NACOS_SERVER_ADDR` | Nacos 服务地址（启用后优先从 Nacos 拉取配置） | `localhost:8848` |
 | `NACOS_DATA_ID` | Nacos 配置 Data ID | `agentarena` |
 | `NACOS_GROUP` | Nacos 配置 Group | `DEFAULT_GROUP` |
@@ -252,39 +252,19 @@ AGENTARENA_OPENAI_API_KEY=sk-xxx
 
 ---
 
-## 指定 API 路径（前端）
+## 前端代理与 API 地址
 
-前端通过 `NEXT_PUBLIC_API_URL` 或 `AGENTARENA_API_URL` 指定后端 API 地址，支持**构建时**和**运行时**两种方式。
+前端通过 **API Route** 代理 `/api/*` 到后端，浏览器只需访问前端地址（如 `http://10.2.1.16:3000`），无需直连后端。
 
-### 1. 构建时（本地 / `npm run dev`）
+**流程**：浏览器请求 `http://10.2.1.16:3000/api/datasets` → Next.js 转发到 `AGENTARENA_API_URL/api/datasets` → 返回结果。
 
-在 `frontend/.env.local` 中配置：
+### 配置 AGENTARENA_API_URL（必填）
 
-```env
-NEXT_PUBLIC_API_URL=http://localhost:8000
-```
+**必须使用 `AGENTARENA_API_URL`**，勿用 `NEXT_PUBLIC_API_URL`。Next.js 会在构建时内联 `NEXT_PUBLIC_*`，导致运行时 env 无法生效。
 
-### 2. 运行时（Docker 容器）
-
-启动容器时通过环境变量传入，**无需重新构建**：
-
-```bash
-docker run -p 3000:3000 \
-  -e NEXT_PUBLIC_API_URL=http://your-api-host:8000 \
-  your-registry/agentarena-frontend:v1.0.0
-```
-
-或 `docker-compose` 中为 frontend 设置：
-
-```yaml
-environment:
-  NEXT_PUBLIC_API_URL: http://backend:8000   # 同一 compose 内用服务名
-  # 或 NEXT_PUBLIC_API_URL: http://宿主机IP:8000
-```
-
-### 3. 优先级
-
-运行时环境变量 > 构建时 `NEXT_PUBLIC_API_URL` > 默认 `http://localhost:8000`。
+- **Docker**：`-e AGENTARENA_API_URL=http://10.2.1.16:31867`
+- **docker-compose**：`AGENTARENA_API_URL: http://backend:8000`
+- **本地开发**：`frontend/.env.local` 中 `AGENTARENA_API_URL=http://localhost:8000`
 
 ---
 

@@ -68,8 +68,9 @@ services:
       dockerfile: ../docker/Dockerfile.frontend
     ports:
       - "3000:3000"
+    # API 代理目标；用 AGENTARENA_API_URL（运行时读取），勿用 NEXT_PUBLIC_*（会构建时内联）
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      AGENTARENA_API_URL: http://backend:8000
     depends_on:
       - backend
 
