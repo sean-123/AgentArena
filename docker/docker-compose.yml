@@ -4,6 +4,7 @@ services:
   mysql:
     image: mysql:8.0
     environment:
+      TZ: Asia/Shanghai
       MYSQL_ROOT_PASSWORD: agentarena
       MYSQL_DATABASE: agent_arena
     ports:
@@ -18,6 +19,8 @@ services:
 
   redis:
     image: redis:7-alpine
+    environment:
+      TZ: Asia/Shanghai
     # Redis 带密码时取消注释并设置 REDIS_PASSWORD：
     # command: redis-server --requirepass ${REDIS_PASSWORD}
     # 在 .env 中设置 REDIS_PASSWORD=your_password
@@ -35,6 +38,7 @@ services:
       dockerfile: ../docker/Dockerfile.backend
     env_file: ../backend/.env
     environment:
+      TZ: Asia/Shanghai
       AGENTARENA_DB_HOST: mysql
       AGENTARENA_DB_PORT: 3306
       AGENTARENA_DB_USER: root
@@ -55,6 +59,7 @@ services:
       dockerfile: docker/Dockerfile.worker
     env_file: ../backend/.env
     environment:
+      TZ: Asia/Shanghai
       AGENTARENA_DB_HOST: mysql
       AGENTARENA_REDIS_URL: redis://redis:6379
     depends_on:
@@ -70,6 +75,7 @@ services:
       - "3000:3000"
     # API 代理目标；用 AGENTARENA_API_URL（运行时读取），勿用 NEXT_PUBLIC_*（会构建时内联）
     environment:
+      TZ: Asia/Shanghai
       AGENTARENA_API_URL: http://backend:8000
     depends_on:
       - backend

@@ -6,11 +6,27 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 
+class LangfuseConfigSchema(BaseModel):
+    """Agent 级 Langfuse 配置（config_json.langfuse）。"""
+
+    host: str  # Langfuse API 地址，如 https://cloud.langfuse.com
+    public_key: str
+    secret_key: str
+    environment: Optional[str] = None
+    prompt_ids: Optional[list[str]] = None  # 指定关联的 prompt ID，不指定则拉取全部
+
+
 class AgentVersionCreate(BaseModel):
-    """Create agent version request."""
+    """Create agent version request.
+
+    config_json 支持 HTTP 配置（base_url, endpoint, auth_token 等）及可选的 langfuse 配置：
+    langfuse: { host, public_key, secret_key, environment?, prompt_ids? }
+    配置后，总结报告将拉取 Langfuse 中的 prompt 并给出针对性优化建议。
+    """
 
     version: Optional[str] = "v1"
     config_json: Optional[dict[str, Any]] = None
+    # config_json 可含: base_url, endpoint, auth_token, persona, langfuse(host, public_key, secret_key, prompt_ids)
 
 
 class AgentVersionUpdate(BaseModel):

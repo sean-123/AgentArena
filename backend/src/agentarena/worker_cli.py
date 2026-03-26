@@ -229,6 +229,8 @@ async def _process_agent_batch(session: AsyncSession, job: dict) -> bool:
         ok = await _process_agent_job(session, mini_job)
         if not ok:
             print(f"[Worker] [批次-Agent] testcase {i+1}/{len(testcases)} 失败，继续")
+        else:
+            await session.commit()
     # 批次结束时再次检查完成状态（若最后一条失败/skip 可能未触发）
     await _check_task_run_completion(session, job)
     return True
@@ -259,6 +261,8 @@ async def _process_comparison_batch(session: AsyncSession, job: dict) -> bool:
         ok = await _process_comparison_job(session, mini_job)
         if not ok:
             print(f"[Worker] [批次-{model_type}] testcase {i+1}/{len(testcases)} 失败，继续")
+        else:
+            await session.commit()
     await _check_task_run_completion(session, job)
     return True
 

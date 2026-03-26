@@ -1,5 +1,5 @@
 @echo off
-chcp 936 > nul
+chcp 65001 > nul
 setlocal enabledelayedexpansion
 
 REM Docker 镜像构建和推送脚本 (Windows)
@@ -14,6 +14,8 @@ REM 配置变量 - 请根据实际阿里云仓库修改
 set REGISTRY=ps-docker-registry.cn-beijing.cr.aliyuncs.com
 set NAMESPACE=psdsframework
 set DEFAULT_ARCH=amd64
+REM 镜像内时区（与 Dockerfile 中 ARG TZ 一致；可改为 UTC 等）
+set DOCKER_TZ=Asia/Shanghai
 
 REM 检查参数
 if "%~1"=="" (
@@ -98,7 +100,7 @@ echo [INFO] 开始构建 Docker 镜像...
 echo [INFO] 目标架构: %ARCH%
 echo [INFO] 使用 buildx 构建...
 
-docker buildx build --platform linux/%ARCH% --tag %IMAGE_TAG% --file %DOCKERFILE% --load %BUILD_CTXT%
+docker buildx build --platform linux/%ARCH% --build-arg TZ=%DOCKER_TZ% --tag %IMAGE_TAG% --file %DOCKERFILE% --load %BUILD_CTXT%
 if errorlevel 1 (
     echo [ERROR] 镜像构建失败
     exit /b 1

@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
 
+    # Langfuse（全局配置，用于总结报告中读取 Prompt 并给出优化建议；Agent 级仅保留 environment、prompt_ids）
+    langfuse_host: str = ""
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+
     # Paths
     base_dir: Path = Path(__file__).resolve().parent.parent.parent.parent
 

@@ -110,6 +110,15 @@ interface ComparisonModelSummary {
   top_cons: TopItem[];
 }
 
+interface PromptOptimizationItem {
+  agent_version_id: string;
+  agent_name: string;
+  prompt_id: string;
+  prompt_version: string;
+  content_preview: string;
+  suggestions: string[];
+}
+
 interface SummaryReport {
   task_id: string;
   task_run_id: string | null;
@@ -126,6 +135,8 @@ interface SummaryReport {
   reply_quality_summary?: string;
   info_accuracy_summary?: string;
   reply_experience_suggestions?: string[];
+  comparison_reverse_validation?: string[];
+  prompt_optimization_by_agent?: PromptOptimizationItem[];
 }
 
 interface Dataset {
@@ -136,6 +147,31 @@ interface Dataset {
 interface Agent {
   id: string;
   name: string;
+}
+
+/** 执行日志中单条回答：超过预览长度时显示「更多 / 收起」 */
+const LOG_ANSWER_PREVIEW_LEN = 200;
+
+function ExecutionLogAnswer({ answer }: { answer: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const needToggle = answer.length > LOG_ANSWER_PREVIEW_LEN;
+  const shown = expanded || !needToggle ? answer : answer.slice(0, LOG_ANSWER_PREVIEW_LEN);
+  return (
+    <div style={{ marginTop: 4 }}>
+      <strong>答：</strong>
+      <span style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{shown}</span>
+      {needToggle && (
+        <Button
+          type="link"
+          size="small"
+          style={{ padding: "0 4px", height: "auto", verticalAlign: "baseline", fontSize: 12 }}
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? "收起" : "更多"}
+        </Button>
+      )}
+    </div>
+  );
 }
 
 export default function TasksPage() {
@@ -240,16 +276,16 @@ export default function TasksPage() {
     failed: "失败",
   };
 
-  const loadTaskDetail = async (taskId: string) => {
-    setDetailLoading(true);
+  const loadTaskDetail = async (taskId: string, options?: { silent?: boolean }) => {
+    if (!options?.silent) setDetailLoading(true);
     try {
       const data = await apiGet<TaskDetail>(`/api/tasks/${taskId}/detail`);
       setDetail(data);
       return data;
     } catch (e) {
-      message.error("加载详情失败: " + (e as Error).message);
+      if (!options?.silent) message.error("加载详情失败: " + (e as Error).message);
     } finally {
-      setDetailLoading(false);
+      if (!options?.silent) setDetailLoading(false);
     }
   };
 
@@ -258,10 +294,13 @@ export default function TasksPage() {
     setDetailDrawerOpen(true);
     setDetail(null);
     loadTaskDetail(task.id).then((d) => {
-      if (d?.task?.status === "running") {
+      // 运行中或待运行均启动轮询，以便进度实时更新
+      const shouldPoll = d?.task?.status === "running" || d?.task?.status === "pending";
+      if (shouldPoll) {
         pollRef.current = setInterval(() => {
-          loadTaskDetail(task.id).then((r) => {
-            if (r?.task?.status !== "running") {
+          loadTaskDetail(task.id, { silent: true }).then((r) => {
+            if (r) setDetail(r);
+            if (r?.task?.status !== "running" && r?.task?.status !== "pending") {
               if (pollRef.current) {
                 clearInterval(pollRef.current);
                 pollRef.current = null;
@@ -269,7 +308,7 @@ export default function TasksPage() {
               loadTasks();
             }
           });
-        }, 2000);
+        }, 1500);
       }
     });
   };
@@ -638,16 +677,9 @@ export default function TasksPage() {
                             </div>
                             <div>
                               <strong>问：</strong>
-                              {ev.question}
-                              {ev.question?.length >= 200 ? "…" : ""}
+                              <span style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{ev.question}</span>
                             </div>
-                            {ev.answer && (
-                              <div style={{ marginTop: 4 }}>
-                                <strong>答：</strong>
-                                {ev.answer}
-                                {ev.answer.length >= 200 ? "…" : ""}
-                              </div>
-                            )}
+                            {ev.answer ? <ExecutionLogAnswer answer={ev.answer} /> : null}
                           </div>
                         ))
                       ) : (
@@ -687,16 +719,9 @@ export default function TasksPage() {
                       </div>
                       <div>
                         <strong>问：</strong>
-                        {ev.question}
-                        {ev.question?.length >= 200 ? "…" : ""}
+                        <span style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{ev.question}</span>
                       </div>
-                      {ev.answer && (
-                        <div style={{ marginTop: 4 }}>
-                          <strong>答：</strong>
-                          {ev.answer}
-                          {ev.answer.length >= 200 ? "…" : ""}
-                        </div>
-                      )}
+                      {ev.answer ? <ExecutionLogAnswer answer={ev.answer} /> : null}
                     </div>
                   ))
                 ) : (
@@ -1025,6 +1050,60 @@ export default function TasksPage() {
                     <li key={i}>{s}</li>
                   ))}
                 </ul>
+              </>
+            )}
+
+            {summaryData.comparison_reverse_validation && summaryData.comparison_reverse_validation.length > 0 && (
+              <>
+                <Typography.Title level={5} style={{ marginTop: 16, color: "#eb2f96" }}>
+                  通用大模型反向验证
+                </Typography.Title>
+                <Typography.Paragraph type="secondary">
+                  使用通用大模型的返回结果反向验证 Agent 的回复，识别要点缺失并给出优化建议
+                </Typography.Paragraph>
+                <ul style={{ paddingLeft: 20 }}>
+                  {summaryData.comparison_reverse_validation.map((s, i) => (
+                    <li key={i} style={s.startsWith("【") ? { listStyle: "none", fontWeight: 600, marginTop: i > 0 ? 12 : 0 } : {}}>
+                      {s}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+
+            {summaryData.prompt_optimization_by_agent && summaryData.prompt_optimization_by_agent.length > 0 && (
+              <>
+                <Typography.Title level={5} style={{ marginTop: 24, color: "#1890ff" }}>
+                  Langfuse Prompt 优化建议
+                </Typography.Title>
+                <Typography.Paragraph type="secondary">
+                  从 Langfuse 读取的 Agent 关联 Prompt 文件，结合评测反馈给出的针对性优化建议
+                </Typography.Paragraph>
+                {summaryData.prompt_optimization_by_agent.map((item, idx) => (
+                  <Card key={idx} size="small" style={{ marginTop: 12 }}>
+                    <Typography.Text strong>{item.agent_name}</Typography.Text>
+                    <span style={{ color: "#999", marginLeft: 8 }}>Prompt: {item.prompt_id}</span>
+                    {item.prompt_version && (
+                      <span style={{ color: "#999", marginLeft: 4 }}>v{item.prompt_version}</span>
+                    )}
+                    {item.content_preview && (
+                      <div style={{ marginTop: 8, padding: 8, background: "#fafafa", borderRadius: 4, fontSize: 13 }}>
+                        <Typography.Text type="secondary">内容摘要：</Typography.Text>
+                        <div style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{item.content_preview}</div>
+                      </div>
+                    )}
+                    {item.suggestions?.length > 0 && (
+                      <div style={{ marginTop: 8 }}>
+                        <Typography.Text strong>优化建议：</Typography.Text>
+                        <ul style={{ paddingLeft: 20, margin: "4px 0 0" }}>
+                          {item.suggestions.map((s, i) => (
+                            <li key={i}>{s}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </Card>
+                ))}
               </>
             )}
 

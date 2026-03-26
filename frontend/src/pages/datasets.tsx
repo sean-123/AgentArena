@@ -22,6 +22,7 @@ import {
   EditOutlined,
   DeleteOutlined,
   EyeOutlined,
+  DownloadOutlined,
 } from "@ant-design/icons";
 import MainLayout from "@/components/MainLayout";
 import { apiGet, apiPost, apiPostFile, apiPatch, apiDelete } from "@/api/client";
@@ -259,6 +260,13 @@ export default function DatasetsPage() {
         title="数据集"
         extra={
           <Space>
+            <Button
+              icon={<DownloadOutlined />}
+              href="/testcase-import-template.xlsx"
+              download="testcase-import-template.xlsx"
+            >
+              下载 Excel 模板
+            </Button>
             <Upload
               accept=".json"
               showUploadList={false}

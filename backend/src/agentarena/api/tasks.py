@@ -175,6 +175,36 @@ async def force_complete_task(task_id: str, db: DbSession):
 COMPARE_MODEL_LABELS = {"doubao": "豆包 DouBao", "qwen": "通义千问 Qwen", "deepseek": "DeepSeek"}
 
 
+@router.get("/{task_id}/progress-debug")
+async def get_task_progress_debug(task_id: str, db: DbSession):
+    """诊断接口：返回原始进度数据，用于排查 API 与 Worker 是否看到同一 DB。"""
+    from sqlalchemy import func
+
+    run_result = await db.execute(
+        select(TaskRun).where(TaskRun.task_id == task_id).order_by(TaskRun.created_at.desc()).limit(1)
+    )
+    latest_run = run_result.scalar_one_or_none()
+    if not latest_run:
+        return {"task_id": task_id, "latest_run_id": None, "ev_count": 0, "ce_count": 0, "total_jobs": None}
+
+    ev_res = await db.execute(
+        select(func.count()).select_from(Evaluation).where(Evaluation.task_run_id == latest_run.id)
+    )
+    ce_res = await db.execute(
+        select(func.count()).select_from(ComparisonEvaluation).where(
+            ComparisonEvaluation.task_run_id == latest_run.id
+        )
+    )
+    return {
+        "task_id": task_id,
+        "latest_run_id": latest_run.id,
+        "ev_count": int(ev_res.scalar() or 0),
+        "ce_count": int(ce_res.scalar() or 0),
+        "total_jobs": latest_run.total_jobs,
+        "completed": int(ev_res.scalar() or 0) + int(ce_res.scalar() or 0),
+    }
+
+
 @router.get("/{task_id}/detail", response_model=TaskDetailResponse)
 async def get_task_detail(task_id: str, db: DbSession):
     """Get task detail: config, latest run progress, execution log (per worker slot)."""
@@ -356,8 +386,8 @@ async def get_task_detail(task_id: str, db: DbSession):
                         "id": e.id,
                         "agent_version_id": None,
                         "model_type": e.model_type,
-                        "question": (e.question or "")[:200],
-                        "answer": (e.answer or "")[:200] if e.answer else "",
+                        "question": e.question or "",
+                        "answer": e.answer or "",
                         "latency": e.latency,
                         "created_at": e.created_at.isoformat() if e.created_at else None,
                     })
@@ -376,8 +406,8 @@ async def get_task_detail(task_id: str, db: DbSession):
                     slot_logs.append({
                         "id": e.id,
                         "agent_version_id": e.agent_version_id,
-                        "question": (e.question or "")[:200],
-                        "answer": (e.answer or "")[:200] if e.answer else "",
+                        "question": e.question or "",
+                        "answer": e.answer or "",
                         "latency": e.latency,
                         "created_at": e.created_at.isoformat() if e.created_at else None,
                     })
@@ -389,6 +419,11 @@ async def get_task_detail(task_id: str, db: DbSession):
         all_logs.extend(item["logs"])
     all_logs.sort(key=lambda x: x.get("created_at") or "", reverse=True)
     ev_logs = all_logs[:100]
+
+    # 自愈：total_jobs 未正确设置时，用 testcase_total * slot 数作为 fallback
+    if total == 0 and testcase_total > 0 and progress_by_worker:
+        total = testcase_total * len(progress_by_worker)
+        percent = round(100 * completed / total, 1) if total else 0
 
     return TaskDetailResponse(
         task=task,

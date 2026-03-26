@@ -135,6 +135,17 @@ class ComparisonModelSummary(BaseModel):
     top_cons: list[TopItem] = []
 
 
+class PromptOptimizationItem(BaseModel):
+    """单 Agent 的 Langfuse Prompt 优化建议。"""
+
+    agent_version_id: str
+    agent_name: str
+    prompt_id: str
+    prompt_version: str = "default"
+    content_preview: str = ""  # 前 500 字摘要
+    suggestions: list[str] = []  # 针对该 prompt 的优化建议（来自评测反馈）
+
+
 class TaskSummaryReportResponse(BaseModel):
     """任务总结报告（整批次汇总）。"""
 
@@ -154,3 +165,9 @@ class TaskSummaryReportResponse(BaseModel):
     reply_quality_summary: str = ""  # 回复质量总评（清晰度、结构等）
     info_accuracy_summary: str = ""  # 信息准确度（正确性、幻觉控制等）
     reply_experience_suggestions: list[str] = []  # 怎么回复给人的感觉会更好
+    # 通用大模型反向验证：用通用大模型回答反向验证 Agent 的回复要点缺失与优化建议
+    comparison_reverse_validation: list[str] = []
+    # Langfuse Prompt 优化建议：当 Agent 配置了 Langfuse 时，读取 prompt 文件并给出针对性优化建议
+    prompt_optimization_by_agent: list["PromptOptimizationItem"] = []
+
+

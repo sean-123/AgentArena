@@ -1,5 +1,11 @@
 FROM python:3.12-slim
 
+# 时区（日志、Python datetime；运行时可 -e TZ=... 覆盖）
+ARG TZ=Asia/Shanghai
+ENV TZ=${TZ}
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Install uv

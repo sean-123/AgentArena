@@ -32,6 +32,11 @@ interface AgentVersion {
   config_json: string | null;
 }
 
+interface LangfuseConfig {
+  environment?: string;
+  prompt_ids?: string[];
+}
+
 interface AgentConfig {
   type?: string;
   base_url?: string;
@@ -43,6 +48,7 @@ interface AgentConfig {
   auth_token?: string;
   auth_token_env?: string;
   persona?: string;
+  langfuse?: LangfuseConfig;
 }
 
 export default function AgentsPage() {
@@ -89,6 +95,22 @@ export default function AgentsPage() {
         // 忽略无效 JSON
       }
     }
+    // Langfuse 配置（host/public_key/secret_key 来自 .env/Nacos 全局配置，Agent 仅配置 environment、prompt_ids）
+    if (vals.langfuse_environment || vals.langfuse_prompt_ids) {
+      const lf: LangfuseConfig = {
+        environment: (vals.langfuse_environment as string)?.trim() || undefined,
+      };
+      if (vals.langfuse_prompt_ids) {
+        const raw = String(vals.langfuse_prompt_ids).trim();
+        if (raw) {
+          const ids = raw.split(/[,\s]+/).filter((s) => s.length > 0);
+          if (ids.length) lf.prompt_ids = ids;
+        }
+      }
+      if (lf.environment || (lf.prompt_ids && lf.prompt_ids.length > 0)) {
+        config.langfuse = lf;
+      }
+    }
     return config;
   };
 
@@ -126,6 +148,7 @@ export default function AgentsPage() {
           // ignore
         }
       }
+      const lf = config.langfuse;
       configForm.setFieldsValue({
         type: config.type || "http",
         base_url: config.base_url || config.baseUrl || "",
@@ -138,6 +161,8 @@ export default function AgentsPage() {
         auth_token: config.auth_token || "",
         auth_token_env: config.auth_token_env || "",
         persona: config.persona || "",
+        langfuse_environment: lf?.environment || "",
+        langfuse_prompt_ids: lf?.prompt_ids?.join(", ") || "",
       });
     } catch (e) {
       message.error("加载配置失败: " + (e as Error).message);
@@ -296,6 +321,28 @@ export default function AgentsPage() {
                   </div>
                 ),
               },
+              {
+                key: "langfuse",
+                label: "Langfuse 配置（host/public_key/secret_key 在 .env 中配置）",
+                children: (
+                  <div>
+                    <Form.Item
+                      name="langfuse_environment"
+                      label="environment"
+                      extra="可选，Langfuse 环境标签"
+                    >
+                      <Input placeholder="如：production" />
+                    </Form.Item>
+                    <Form.Item
+                      name="langfuse_prompt_ids"
+                      label="prompt_ids"
+                      extra="可选，逗号分隔的 Prompt ID，不填则拉取全部。凭证在 .env 中配置"
+                    >
+                      <Input placeholder="system-prompt, intent-router" />
+                    </Form.Item>
+                  </div>
+                ),
+              },
             ]}
           />
         </Form>
@@ -347,6 +394,34 @@ export default function AgentsPage() {
           <Form.Item name="auth_token_env" label="auth_token_env">
             <Input placeholder="环境变量名" />
           </Form.Item>
+
+          <Collapse
+            style={{ marginTop: 16 }}
+            items={[
+              {
+                key: "langfuse",
+                label: "Langfuse 配置（host/public_key/secret_key 在 .env 全局配置，此处仅填 environment、prompt_ids）",
+                children: (
+                  <div>
+                    <Form.Item
+                      name="langfuse_environment"
+                      label="environment"
+                      extra="可选，环境标签"
+                    >
+                      <Input placeholder="如：production" />
+                    </Form.Item>
+                    <Form.Item
+                      name="langfuse_prompt_ids"
+                      label="prompt_ids"
+                      extra="可选，逗号或空格分隔的 Prompt ID，不填则拉取全部"
+                    >
+                      <Input placeholder="如：system-prompt, intent-router-prompt" />
+                    </Form.Item>
+                  </div>
+                ),
+              },
+            ]}
+          />
         </Form>
       </Modal>
     </MainLayout>

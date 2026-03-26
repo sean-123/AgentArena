@@ -20,16 +20,19 @@ from agentarena.schemas.report_schema import (
     EvaluationWithScoreResponse,
     LeaderboardEntry,
     OptimizationByCategory,
+    PromptOptimizationItem,
     ScoreResponse,
     TaskSummaryReportResponse,
     TopItem,
     TopItemExample,
 )
+from agentarena.services.langfuse_prompts import fetch_prompts_for_agent
 from agentarena.services.summary_report_service import (
     build_comparison_summary,
     build_summary,
     MODEL_DISPLAY_NAMES,
 )
+from agentarena.services.reverse_validation_service import build_reverse_validation
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -263,9 +266,18 @@ async def get_task_summary_report(
         {"model_type": ce.model_type, "pros": cs.pros, "cons": cs.cons, "avg_score": cs.avg_score}
         for ce, cs in comp_rows
     ]
+
+    # 构建 testcase_id -> 首个 Agent 回答 的映射，用于反向验证
+    agent_by_tc: dict[str, dict[str, str]] = {}
+    for ev, _ in rows:
+        tc = ev.testcase_id
+        if tc not in agent_by_tc:
+            agent_by_tc[tc] = {"question": ev.question or "", "answer": ev.answer or ""}
+
     comparison_by_model: list[ComparisonModelSummary] = []
     agent_vs_comparison: list[str] = []
     takeaways_from_comparison: list[str] = []
+    comparison_reverse_validation: list[str] = []
     if comp_ev_list:
         comp_summary = build_comparison_summary(comp_ev_list, top_n=5)
         for data in comp_summary["by_model"]:
@@ -296,6 +308,32 @@ async def get_task_summary_report(
         agent_vs_comparison = comp_summary.get("agent_vs_comparison", [])
         takeaways_from_comparison = comp_summary.get("takeaways", comp_summary.get("takeaways_from_comparison", []))
 
+    # Langfuse Prompt 优化：对有 Langfuse 配置的 Agent，拉取 prompt 并与评测的提示词优化建议结合
+    prompt_optimization_by_agent: list[PromptOptimizationItem] = []
+    if av_ids:
+        av_config_q = select(AgentVersion.id, AgentVersion.config_json).where(AgentVersion.id.in_(av_ids))
+        av_config_rows = (await db.execute(av_config_q)).all()
+        for av_id, config_json in av_config_rows:
+            prompts = fetch_prompts_for_agent(config_json)
+            if not prompts:
+                continue
+            agent_name = agent_names.get(av_id, av_id)
+            prompt_opt = summary["by_agent"].get(av_id, {}).get("optimizations", {}).get("prompt", [])
+            for p in prompts:
+                suggestions = list(prompt_opt) if prompt_opt else []
+                if not suggestions:
+                    suggestions = ["基于评测反馈，可优化此 prompt 的清晰度与指令明确性"]
+                prompt_optimization_by_agent.append(
+                    PromptOptimizationItem(
+                        agent_version_id=av_id,
+                        agent_name=agent_name,
+                        prompt_id=p.get("prompt_id", ""),
+                        prompt_version=str(p.get("version", "default")),
+                        content_preview=p.get("content_preview", ""),
+                        suggestions=suggestions,
+                    )
+                )
+
     return TaskSummaryReportResponse(
         task_id=task_id,
         task_run_id=effective_run_id,
@@ -317,4 +355,6 @@ async def get_task_summary_report(
         reply_quality_summary=overall.get("reply_quality_summary", ""),
         info_accuracy_summary=overall.get("info_accuracy_summary", ""),
         reply_experience_suggestions=overall.get("reply_experience_suggestions", []),
+        comparison_reverse_validation=comparison_reverse_validation,
+        prompt_optimization_by_agent=prompt_optimization_by_agent,
     )
