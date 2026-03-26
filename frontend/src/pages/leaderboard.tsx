@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Table, Card, Select, message, Spin, Typography, Modal } from "antd";
+import { Table, Card, Select, message, Spin, Typography, Modal, Tag } from "antd";
 import { FileTextOutlined, FullscreenOutlined } from "@ant-design/icons";
 import MainLayout from "@/components/MainLayout";
 import { apiGet } from "@/api/client";
@@ -92,6 +92,7 @@ const T = {
   filterRun: (() => String.fromCodePoint(0x8fd0, 0x884c, 0x6279, 0x6b21))(),
   latestRun: (() => String.fromCodePoint(0x6700, 0x65b0, 0x4e00, 0x6b21))(),
   rank: (() => String.fromCodePoint(0x6392, 0x540d))(),
+  taskName: (() => String.fromCodePoint(0x4efb, 0x52a1, 0x540d, 0x79f0))(),
   taskId: (() => String.fromCodePoint(0x4efb, 0x52a1) + " ID")(),
   evalCount: (() => String.fromCodePoint(0x8bc4, 0x6d4b, 0x6b21, 0x6570))(),
 };
@@ -115,8 +116,11 @@ interface LeaderboardEntry {
   id: string;
   task_id: string;
   task_run_id?: string | null;
+  task_name?: string | null;
   agent_name: string;
   agent_version_id?: string | null;
+  /** 对比模型行：doubao | qwen | deepseek */
+  comparison_model_type?: string | null;
   avg_score: number;
   elo: number;
   evaluation_count: number;
@@ -723,7 +727,27 @@ export default function LeaderboardPage() {
               key: "rank",
               render: (_: unknown, __: LeaderboardEntry, index: number) => index + 1,
             },
-            { title: "Agent", dataIndex: "agent_name", key: "agent_name" },
+            {
+              title: T.taskName,
+              dataIndex: "task_name",
+              key: "task_name",
+              ellipsis: true,
+              render: (v: string | null | undefined) => v || "-",
+            },
+            {
+              title: "参与者",
+              key: "participant",
+              render: (_: unknown, row: LeaderboardEntry) => (
+                <span>
+                  {row.agent_name}
+                  {row.comparison_model_type ? (
+                    <Tag color="orange" style={{ marginLeft: 8 }}>
+                      对比模型
+                    </Tag>
+                  ) : null}
+                </span>
+              ),
+            },
             {
               title: T.taskId,
               dataIndex: "task_id",

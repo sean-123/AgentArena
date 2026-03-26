@@ -66,7 +66,27 @@ async def get_leaderboard(
     if effective_run_id is not None:
         q = q.where(Leaderboard.task_run_id == effective_run_id)
     result = await db.execute(q)
-    return list(result.scalars().all())
+    rows = list(result.scalars().all())
+    task_ids = {lb.task_id for lb in rows if lb.task_id}
+    task_names: dict[str, str] = {}
+    if task_ids:
+        tr = await db.execute(select(Task.id, Task.name).where(Task.id.in_(task_ids)))
+        task_names = {r[0]: r[1] for r in tr.all()}
+    return [
+        LeaderboardEntry(
+            id=lb.id,
+            task_id=lb.task_id,
+            task_run_id=lb.task_run_id,
+            task_name=task_names.get(lb.task_id) if lb.task_id else None,
+            agent_name=lb.agent_name,
+            agent_version_id=lb.agent_version_id,
+            comparison_model_type=lb.comparison_model_type,
+            avg_score=lb.avg_score,
+            elo=lb.elo or 0.0,
+            evaluation_count=lb.evaluation_count or 0,
+        )
+        for lb in rows
+    ]
 
 
 @router.get("/evaluations", response_model=list[EvaluationResponse])

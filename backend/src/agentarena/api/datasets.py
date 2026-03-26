@@ -20,6 +20,7 @@ from agentarena.schemas.dataset_schema import (
     TestcaseUpdate,
 )
 from agentarena.utils.excel_importer import import_excel_to_testcases
+from agentarena.utils.testcase_id import make_testcase_id
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -101,6 +102,7 @@ async def list_testcases(dataset_id: str, version_id: str, db: DbSession):
         select(Testcase)
         .join(DatasetVersion, Testcase.dataset_version_id == DatasetVersion.id)
         .where(DatasetVersion.id == version_id, DatasetVersion.dataset_id == dataset_id)
+        .order_by(Testcase.created_at.desc())
     )
     return list(result.scalars().all())
 
@@ -121,8 +123,21 @@ async def add_testcase(
     )
     if not result.scalar_one_or_none():
         raise HTTPException(404, "Dataset version not found")
+    tid = (
+        make_testcase_id(dataset_id, version_id, body.id)
+        if body.id
+        else f"tc_{uuid.uuid4().hex[:12]}"
+    )
+    dup = await db.execute(
+        select(Testcase.id).where(
+            Testcase.id == tid,
+            Testcase.dataset_version_id == version_id,
+        )
+    )
+    if dup.scalar_one_or_none():
+        raise HTTPException(409, "该测试用例 ID 在本数据集中已存在")
     tc = Testcase(
-        id=body.id or f"tc_{uuid.uuid4().hex[:12]}",
+        id=tid,
         dataset_version_id=version_id,
         question=body.question,
         persona_question=body.persona_question,
@@ -239,21 +254,44 @@ async def import_excel(
         raise HTTPException(404, "Dataset version not found")
     content = await file.read()
     testcases = import_excel_to_testcases(content)
-    created = []
+    created_ids: list[str] = []
+    updated_ids: list[str] = []
     for tc_data in testcases:
-        tc = Testcase(
-            id=tc_data.get("id") or f"tc_{uuid.uuid4().hex[:12]}",
-            dataset_version_id=version_id,
-            question=tc_data.get("question", ""),
-            persona_question=tc_data.get("persona_question"),
-            key_points=json.dumps(tc_data.get("key_points", [])) if tc_data.get("key_points") else None,
-            domain=tc_data.get("domain"),
-            difficulty=tc_data.get("difficulty"),
+        tid = make_testcase_id(dataset_id, version_id, tc_data.get("id"))
+        res = await db.execute(
+            select(Testcase).where(
+                Testcase.id == tid,
+                Testcase.dataset_version_id == version_id,
+            )
         )
-        db.add(tc)
-        created.append(tc)
+        existing = res.scalar_one_or_none()
+        if existing:
+            existing.question = tc_data.get("question", "")
+            existing.persona_question = tc_data.get("persona_question")
+            existing.key_points = (
+                json.dumps(tc_data.get("key_points", [])) if tc_data.get("key_points") else None
+            )
+            existing.domain = tc_data.get("domain")
+            existing.difficulty = tc_data.get("difficulty")
+            updated_ids.append(tid)
+        else:
+            tc = Testcase(
+                id=tid,
+                dataset_version_id=version_id,
+                question=tc_data.get("question", ""),
+                persona_question=tc_data.get("persona_question"),
+                key_points=json.dumps(tc_data.get("key_points", [])) if tc_data.get("key_points") else None,
+                domain=tc_data.get("domain"),
+                difficulty=tc_data.get("difficulty"),
+            )
+            db.add(tc)
+            created_ids.append(tid)
     await db.flush()
-    return {"imported": len(created), "testcases": [{"id": t.id} for t in created]}
+    return {
+        "imported": len(created_ids),
+        "updated": len(updated_ids),
+        "testcases": [{"id": x} for x in (*created_ids, *updated_ids)],
+    }
 
 
 @router.post("/import-json")
@@ -281,12 +319,18 @@ async def import_json(file: UploadFile, db: DbSession):
     )
     db.add(dv)
     await db.flush()
-    for i, item in enumerate(items):
+    # 同一 JSON 内相同外部 id 只保留最后一条；主键为 数据集+版本+外部 id 组合
+    deduped: dict[str, dict] = {}
+    for item in items:
         q = item.get("question", item.get("q", ""))
         if not q:
             continue
+        tid = make_testcase_id(ds.id, dv.id, item.get("id"))
+        deduped[tid] = item
+    for tid, item in deduped.items():
+        q = item.get("question", item.get("q", ""))
         tc = Testcase(
-            id=item.get("id", f"tc_{uuid.uuid4().hex[:12]}"),
+            id=tid,
             dataset_version_id=dv.id,
             question=q,
             persona_question=item.get("persona_question", item.get("persona")),
@@ -299,5 +343,5 @@ async def import_json(file: UploadFile, db: DbSession):
     return {
         "dataset_id": ds.id,
         "version_id": dv.id,
-        "imported": len(items),
+        "imported": len(deduped),
     }

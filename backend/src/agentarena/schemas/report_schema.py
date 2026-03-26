@@ -67,8 +67,10 @@ class LeaderboardEntry(BaseModel):
     id: str
     task_id: Optional[str] = None
     task_run_id: Optional[str] = None
+    task_name: Optional[str] = None
     agent_name: str
     agent_version_id: Optional[str] = None
+    comparison_model_type: Optional[str] = None  # doubao | qwen | deepseek，对比模型行有值
     avg_score: Optional[float] = None
     elo: float
     evaluation_count: int

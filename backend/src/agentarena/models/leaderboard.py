@@ -18,6 +18,8 @@ class Leaderboard(Base, TimestampMixin):
     agent_version_id: Column[str] = Column(
         String(50), ForeignKey("agent_versions.id"), nullable=True
     )
+    # 通用大模型对比行：有值表示该 leaderboard 行对应 doubao/qwen/deepseek；Agent 行为 NULL
+    comparison_model_type: Column[str] = Column(String(50), nullable=True)
     avg_score: Column[float] = Column(Float, nullable=True)
     elo: Column[float] = Column(Float, default=1500.0)
     evaluation_count: int = Column(Integer, default=0)

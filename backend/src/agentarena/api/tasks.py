@@ -168,6 +168,10 @@ async def force_complete_task(task_id: str, db: DbSession):
             latest_run.completed_at = datetime.now(timezone.utc)
     task.status = "completed"
     await db.flush()
+    if latest_run and latest_run.status == "completed":
+        from agentarena.services.task_run_elo_service import recompute_task_run_elo
+
+        await recompute_task_run_elo(db, task_id, latest_run.id)
     return task
 
 

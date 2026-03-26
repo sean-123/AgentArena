@@ -322,11 +322,19 @@ export default function DatasetsPage() {
                           message.error("该数据集暂无版本");
                           return false;
                         }
-                        const res = await apiPostFile<{ imported: number }>(
+                        const res = await apiPostFile<{
+                          imported: number;
+                          updated?: number;
+                        }>(
                           `/api/datasets/${record.id}/versions/${versionId}/import-excel`,
                           file
                         );
-                        message.success(`已导入 ${res.imported} 条测试用例`);
+                        const u = res.updated ?? 0;
+                        message.success(
+                          u > 0
+                            ? `新增 ${res.imported} 条，更新 ${u} 条`
+                            : `已导入 ${res.imported} 条测试用例`
+                        );
                         loadDatasets();
                         if (currentDataset?.id === record.id) {
                           loadTestcases(record.id, versionId);

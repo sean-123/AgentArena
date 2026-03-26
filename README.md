@@ -23,20 +23,20 @@
 
 通过 Web 控制台完成全流程：
 
-1. **管理数据集**：导入 JSON 或 Excel 测试用例，支持版本化管理
-2. **配置 Agent**：为每个待评测的 Agent 配置 HTTP 接口、认证、流式开关等
+1. **管理数据集**：导入 JSON 或 Excel 测试用例，支持版本化管理、Excel 模板下载
+2. **配置 Agent**：为每个待评测的 Agent 配置 HTTP 接口、认证、流式开关等（可选 Langfuse 全局配置）
 3. **创建评估任务**：选择数据集版本和 Agent 版本，一键发起评估
-4. **执行评测**：Worker 从 Redis 队列拉取任务，调用 Agent 获取回答 → LLM Judge 打分 → 写入数据库
-5. **查看结果**：排行榜 ELO 排名、逐条评测详情（提问、回答、优缺点、优化建议），以及**任务总结报告**（高频优缺点举例、回复质量、信息准确度、回复体验改进建议）
+4. **执行评测**：Worker 从 Redis 队列拉取任务，调用 Agent 获取回答 → LLM Judge 打分 → 写入数据库（按条提交，任务详情可实时看进度与日志）
+5. **查看结果**：排行榜 ELO 排名、逐条评测详情，以及**任务总结报告**（高频优缺点、回复质量、信息准确度、体验改进建议等）
 
 ### 特色能力
 
 | 能力 | 说明 |
 |------|------|
 | **Persona 人设** | 根据人设描述将规范问题改写为更自然的提问，模拟真实用户表达 |
-| **任务总结报告** | 聚合评测中的 pros/cons，按优缺点举例（问题+回答），并生成回复质量、信息准确度、体验改进建议 |
+| **任务总结报告** | 聚合评测中的 pros/cons，按优缺点举例，并生成质量与体验类总评 |
 | **通用大模型对比** | 可将自研 Agent 与豆包、通义千问、DeepSeek 等通用模型同场对比 |
-| **强制完成与自愈** | 支持任务完成后自动或手动切换状态，确保能查看总结报告 |
+| **强制完成与自愈** | 任务卡住时可手动强制完成；详情接口会按实际评测数修正任务状态 |
 
 ### 适用场景
 
@@ -51,10 +51,11 @@
 | 功能 | 说明 |
 |------|------|
 | **Agent 基准测试** | 在多数据集上评估多个 AI Agent 的回答质量 |
-| **数据集管理** | 创建、版本化、导入（JSON / Excel）测试用例 |
+| **数据集管理** | 创建、版本化、导入（JSON / Excel）；测试用例列表按创建时间倒序 |
+| **测试用例 ID** | 主键为「数据集 + 版本 + 外部 id」组合，避免跨数据集撞号；`id` 列可选，不填则自动生成 |
 | **Arena 排行榜** | 基于 ELO 的排名，每次运行独立结果，支持多批次对比 |
 | **评估引擎** | LLM Judge 打分（正确性、完整性、清晰度、幻觉控制） |
-| **分布式 Worker** | Redis 任务队列，支持横向扩展 |
+| **分布式 Worker** | Redis 任务队列；Worker 与 API 需连接同一 MySQL、同一 Redis |
 | **Persona 问题** | 根据人设将规范问题改写为自然提问 |
 | **MySQL 配置** | 支持 Web 界面配置数据库 |
 | **一键初始化** | 一键创建数据库与表结构 |
@@ -96,12 +97,15 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 cd AgentArena/backend
 uv sync
 cp .env.example .env
-# 编辑 .env：MySQL、Redis、OpenAI API Key
+# 编辑 .env：MySQL、Redis、OpenAI API Key、TZ（可选，见下文）
 ```
 
 编辑 `.env` 示例：
 
 ```env
+# 时区（日志与本地时间显示，Docker 与本地均可设置）
+TZ=Asia/Shanghai
+
 # 数据库 (MySQL)
 AGENTARENA_DB_HOST=localhost
 AGENTARENA_DB_PORT=3306
@@ -138,6 +142,8 @@ curl -X POST http://localhost:8000/api/system/database/init
 
 ### 4. Worker（用于执行评估任务）
 
+**Worker 与 API 是独立进程**，修改 Worker 代码或配置后需单独重启 Worker。
+
 另开终端：
 
 ```bash
@@ -145,11 +151,15 @@ cd AgentArena/backend
 uv run agentarena-worker
 ```
 
+请确保 **API 与 Worker 使用相同的 `DATABASE_URL` / MySQL 与 Redis 配置**，否则任务会跑但前端进度与日志不更新。
+
 ### 5. 前端
 
 ```bash
 cd AgentArena/frontend
 npm install
+# 本地开发：创建 .env.local
+# AGENTARENA_API_URL=http://localhost:8000
 npm run dev
 ```
 
@@ -162,11 +172,18 @@ cd AgentArena/docker
 docker compose up -d
 ```
 
+**镜像说明**：
+
+- `backend`、`worker`、`frontend` 的 Dockerfile 内已设置默认时区（`tzdata` + `TZ=Asia/Shanghai`，构建时 `--build-arg TZ=...` 可覆盖）。
+- `docker-compose.yml` 中为 mysql、redis、backend、worker、frontend 均设置了 `TZ: Asia/Shanghai`。
+- 从 `docker/` 目录执行 `build-push.bat` 构建镜像时，脚本会传入 `--build-arg TZ`（默认 `Asia/Shanghai`）。
+
 **Docker 镜像配置说明**：backend 与 worker 镜像内已内置 `.env.example` 作为默认配置。启动容器时可通过 `-e` 或 `environment:` 传入环境变量覆盖默认值；未传入的项将使用镜像内的默认配置。
 
 ```bash
 # 示例：运行时覆盖数据库与 Redis
 docker run -p 8000:8000 \
+  -e TZ=Asia/Shanghai \
   -e AGENTARENA_DB_HOST=mysql \
   -e AGENTARENA_DB_PASSWORD=your_password \
   -e AGENTARENA_REDIS_URL=redis://redis:6379 \
@@ -227,6 +244,7 @@ AGENTARENA_OPENAI_API_KEY=sk-xxx
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
+| `TZ` | 容器/进程时区（日志与时间显示） | `Asia/Shanghai` |
 | `AGENTARENA_DB_HOST` | MySQL 主机 | `localhost` |
 | `AGENTARENA_DB_PORT` | MySQL 端口 | `3306` |
 | `AGENTARENA_DB_USER` | 数据库用户 | `root` |
@@ -243,7 +261,7 @@ AGENTARENA_OPENAI_API_KEY=sk-xxx
 | `AGENTARENA_OPENAI_BASE_URL` | LLM API 地址（可选） | 默认 OpenAI |
 | `AGENTARENA_LLM_MODEL` | LLM 模型名 | `gpt-4o-mini` |
 | `AGENT_TW_SERVICE_TOKEN` | Agent Bearer Token | 在 Agent `auth_token_env` 中引用 |
-| `AGENTARENA_API_URL` | 前端代理目标地址（API Route 转发目标） | `http://10.2.1.16:31867` 或 `http://backend:8000` |
+| `AGENTARENA_API_URL` | 前端代理目标地址（API Route 转发目标） | `http://backend:8000` |
 | `NACOS_SERVER_ADDR` | Nacos 服务地址（启用后优先从 Nacos 拉取配置） | `localhost:8848` |
 | `NACOS_DATA_ID` | Nacos 配置 Data ID | `agentarena` |
 | `NACOS_GROUP` | Nacos 配置 Group | `DEFAULT_GROUP` |
@@ -254,17 +272,43 @@ AGENTARENA_OPENAI_API_KEY=sk-xxx
 
 ## 前端代理与 API 地址
 
-前端通过 **API Route** 代理 `/api/*` 到后端，浏览器只需访问前端地址（如 `http://10.2.1.16:3000`），无需直连后端。
+前端通过 **API Route** 代理 `/api/*` 到后端，浏览器只需访问前端地址，无需直连后端。
 
-**流程**：浏览器请求 `http://10.2.1.16:3000/api/datasets` → Next.js 转发到 `AGENTARENA_API_URL/api/datasets` → 返回结果。
+**流程**：浏览器请求 `http://localhost:3000/api/datasets` → Next.js 转发到 `AGENTARENA_API_URL/api/datasets` → 返回结果。
 
 ### 配置 AGENTARENA_API_URL（必填）
 
 **必须使用 `AGENTARENA_API_URL`**，勿用 `NEXT_PUBLIC_API_URL`。Next.js 会在构建时内联 `NEXT_PUBLIC_*`，导致运行时 env 无法生效。
 
-- **Docker**：`-e AGENTARENA_API_URL=http://10.2.1.16:31867`
+- **Docker**：`-e AGENTARENA_API_URL=http://backend:8000`
 - **docker-compose**：`AGENTARENA_API_URL: http://backend:8000`
 - **本地开发**：`frontend/.env.local` 中 `AGENTARENA_API_URL=http://localhost:8000`
+
+---
+
+## 数据集与导入
+
+### Excel 模板
+
+- 数据集页面可下载 **「下载 Excel 模板」**（静态文件 `testcase-import-template.xlsx`）。
+- 仓库内源文件与生成脚本：`templates/testcase-import-template.xlsx`、`scripts/generate_excel_template.py`（生成时会同步到 `frontend/public/`）。
+
+### 列说明
+
+| 列名 | 必填 | 说明 |
+|------|------|------|
+| `id` | **否** | 不填则自动生成；填则与数据集、版本组合成全局唯一主键 |
+| `question` | **是** | 评测问题（也支持 `q`、`问题`） |
+| `persona_question` | 否 | 人设问题；若 `key_points` 为空且本列为逗号分隔内容，会解析为要点 |
+| `key_points` | 否 | 要点，逗号或 JSON 数组；列名也支持 `要点`、`关键点` |
+| `domain` / `difficulty` | 否 | 领域、难度 |
+
+### 测试用例 ID 规则
+
+- 未提供 `id`：系统生成 `tc_` + 随机串。
+- 提供 `id`：存储为 `{dataset_id}_{version_id}_{清洗后的 id}`（总长 ≤50 字符；超长则哈希缩短），与**数据集 + 版本**绑定，避免与其它数据集重复。
+- **Excel 再次导入**：同一版本下相同组合 id 的**行会更新**已有记录，并返回 `imported`（新增条数）与 `updated`（更新条数）。
+- **手动新增**：若填写 id 且与当前版本已有记录冲突，接口返回 **409**。
 
 ---
 
@@ -276,8 +320,9 @@ AGENTARENA_OPENAI_API_KEY=sk-xxx
 
 ### 2. 创建数据集
 
-- 在 **数据集** 页面创建数据集及版本
-- 支持 **JSON 导入** 或 **Excel 导入**
+- 在 **数据集** 页面创建数据集及版本。
+- 支持 **JSON 导入** 或 **Excel 导入**；可下载 Excel 模板。
+- **查看数据** 抽屉中，测试用例列表按 **创建时间倒序**（最新在前）。
 
 ### 3. 注册 Agent
 
@@ -289,19 +334,23 @@ AGENTARENA_OPENAI_API_KEY=sk-xxx
 - `stream`（是否流式）
 - `persona`（人设，用于改写问题）
 
+可选：在 `.env` 或 Nacos 中配置 **Langfuse**（`AGENTARENA_LANGFUSE_*`），用于总结报告中的 Prompt 优化建议。
+
 ### 4. 创建评估任务
 
 在 **任务** 页面：
 
 - 选择数据集版本
-- 选择参与评估的 Agent
+- 选择参与评估的 Agent（及可选对比模型）
 - 点击 **运行** 发起评估
+
+任务运行中可打开 **查看详情**：执行进度与执行日志会随轮询刷新；单条回答超过预览长度时可点 **「更多」** 展开全文，**「收起」** 缩回。
 
 ### 5. 查看排行榜
 
 - 在 **排行榜** 页面查看 ELO 排名
 - 筛选 **任务** 与 **运行批次**
-- 展开行查看每次评测的提问、回答、优点、缺点、优化建议（均为中文）
+- 展开行查看每次评测的提问、回答、优点、缺点、优化建议
 
 ---
 
@@ -335,14 +384,16 @@ LLM Judge 对每次回答打分（1–5 分）：
 |------|------|------|
 | POST | `/api/system/database/init` | 一键初始化数据库 |
 | GET/POST | `/api/tasks` | 任务 CRUD |
-| GET | `/api/tasks/{id}/runs` | 任务运行批次列表 |
+| GET | `/api/tasks/{id}/detail` | 任务详情（进度、按 Worker 的日志） |
+| GET | `/api/tasks/{id}/progress-debug` | 诊断：评测条数与 total_jobs（排查 DB 是否一致） |
+| POST | `/api/tasks/{id}/force-complete` | 强制标记任务完成 |
 | GET/POST | `/api/datasets` | 数据集 CRUD |
-| POST | `/api/datasets/.../import-json` | JSON 导入 |
-| POST | `/api/datasets/.../import-excel` | Excel 导入 |
+| POST | `/api/datasets/import-json` | JSON 导入（新建数据集） |
+| POST | `/api/datasets/.../import-excel` | Excel 导入至某版本 |
 | GET/POST | `/api/agents` | Agent CRUD |
 | POST | `/api/evaluation/tasks/{id}/run` | 发起评估 |
 | GET | `/api/reports/leaderboard` | 排行榜（支持 task_id、task_run_id） |
-| GET | `/api/reports/leaderboard/detail` | 排行榜详情（含 task_run_id） |
+| GET | `/api/reports/summary` | 任务总结报告 |
 
 ---
 
@@ -350,39 +401,40 @@ LLM Judge 对每次回答打分（1–5 分）：
 
 ```
 AgentArena/
-├── backend/                 # FastAPI 后端
+├── backend/
 │   ├── src/agentarena/
-│   │   ├── api/             # REST 路由
-│   │   │   ├── tasks.py     # 任务、运行批次
-│   │   │   ├── datasets.py  # 数据集、版本、导入
-│   │   │   ├── agents.py    # Agent、版本
-│   │   │   ├── evaluation.py
-│   │   │   ├── reports.py   # 排行榜、评测详情
-│   │   │   └── system.py    # 数据库初始化
+│   │   ├── api/             # REST 路由（tasks、datasets、agents、evaluation、reports、system）
 │   │   ├── core/            # 配置、数据库、init_db
 │   │   ├── models/          # SQLAlchemy 模型
 │   │   ├── schemas/         # Pydantic 模式
-│   │   ├── services/        # 评估服务、任务分发
+│   │   ├── services/        # 评估服务、任务分发、Langfuse 等
 │   │   ├── evaluation_engine/
-│   │   │   ├── agent_runner.py  # HTTP 调用 Agent
-│   │   │   ├── llm_judge.py     # LLM 打分
-│   │   │   ├── arena_ranking.py # ELO 计算
-│   │   │   └── persona.py       # Persona 问题生成
-│   │   └── utils/
-│   ├── worker_cli.py        # Worker 入口（uv run agentarena-worker）
+│   │   │   ├── agent_runner.py
+│   │   │   ├── llm_judge.py
+│   │   │   ├── llm_comparison.py
+│   │   │   ├── arena_ranking.py
+│   │   │   └── persona.py
+│   │   └── utils/           # excel_importer、testcase_id 等
+│   ├── worker_cli.py        # Worker 入口：uv run agentarena-worker
 │   └── pyproject.toml
-├── frontend/                # Next.js 前端
-│   ├── src/pages/
-│   │   ├── index.tsx        # 控制台
-│   │   ├── tasks/           # 任务
-│   │   ├── datasets/        # 数据集
-│   │   ├── agents/          # Agents
-│   │   ├── leaderboard/     # 排行榜
-│   │   └── settings/        # 设置
+├── frontend/
+│   ├── src/
+│   │   ├── pages/           # 各业务页面（tasks、datasets、agents、leaderboard、settings）
+│   │   ├── pages/api/       # API 代理 [[...path]].ts
+│   │   ├── middleware.ts    # 如 /__vite_ping 占位（避免开发时 404 日志）
+│   │   └── components/
+│   ├── public/              # 静态资源（含 Excel 模板）
 │   └── package.json
-└── docker/
-    ├── docker-compose.yml
-    └── Dockerfile.*
+├── docker/
+│   ├── docker-compose.yml
+│   ├── Dockerfile.backend
+│   ├── Dockerfile.worker
+│   ├── Dockerfile.frontend
+│   └── build-push.bat       # 镜像构建与推送（含 TZ 构建参数）
+├── scripts/
+│   └── generate_excel_template.py
+├── templates/               # Excel 模板说明与生成产物
+└── README.md
 ```
 
 ---
@@ -423,13 +475,23 @@ Authorization: Bearer {token}  # 若配置了 auth_token
 
 确认 MySQL 已启动，用户有 CREATE DATABASE 权限，端口与 `.env` 一致。
 
-### 3. 排行榜无数据
+### 3. 任务在跑但前端进度始终为 0
+
+- API 与 Worker **必须连接同一 MySQL**（容器内勿用 `localhost` 指错宿主机）。
+- Worker 需**单独进程**运行；改代码后需重启 Worker。
+- 可调用 `GET /api/tasks/{id}/progress-debug` 查看 `ev_count` / `ce_count` 是否与 Worker 一致。
+
+### 4. 排行榜无数据
 
 需先运行 Worker，待评估任务完成后才会写入排行榜。
 
-### 4. LLM Judge 未生效
+### 5. LLM Judge 未生效
 
 检查 `AGENTARENA_OPENAI_API_KEY` 是否有效，或 `AGENTARENA_OPENAI_BASE_URL` 是否为兼容 OpenAI 的接口。
+
+### 6. 开发时终端出现 `GET /__vite_ping 404`
+
+部分编辑器会探测 Vite 开发服务；本项目为 Next.js。已在 `frontend/src/middleware.ts` 对 `/__vite_ping` 返回 200，避免无意义 404 日志。
 
 ---
 

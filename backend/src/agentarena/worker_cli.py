@@ -309,6 +309,9 @@ async def _check_task_run_completion(session: AsyncSession, job: dict) -> None:
             if t:
                 t.status = "completed"
             print(f"[Worker] 任务 {task_id} 已完成 ({completed}/{total_jobs})，已更新为 completed")
+            from agentarena.services.task_run_elo_service import recompute_task_run_elo
+
+            await recompute_task_run_elo(session, task_id, task_run_id)
     elif completed > 0 or total_jobs > 0:
         print(f"[Worker] [完成检查] task_run={task_run_id} 进度 {completed}/{total_jobs}，等待更多评测")
 
@@ -457,6 +460,7 @@ async def _process_agent_job(session: AsyncSession, job: dict) -> bool:
             Leaderboard.task_id == task_id,
             Leaderboard.task_run_id == task_run_id,
             Leaderboard.agent_version_id == agent_version_id,
+            Leaderboard.comparison_model_type.is_(None),
         )
         .limit(1)
     )
@@ -468,6 +472,7 @@ async def _process_agent_job(session: AsyncSession, job: dict) -> bool:
             task_run_id=task_run_id,
             agent_name=agent_name,
             agent_version_id=agent_version_id,
+            comparison_model_type=None,
             avg_score=0.0,
             elo=INITIAL_ELO,
             evaluation_count=0,

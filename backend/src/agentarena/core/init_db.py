@@ -103,6 +103,24 @@ def run_init() -> dict:
                     conn.commit()
             except Exception:
                 pass
+            try:
+                r = conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA = :db AND TABLE_NAME = 'leaderboard' "
+                        "AND COLUMN_NAME = 'comparison_model_type'"
+                    ),
+                    {"db": settings.db_name},
+                )
+                if (r.scalar() or 0) == 0:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE leaderboard ADD COLUMN comparison_model_type VARCHAR(50) NULL"
+                        )
+                    )
+                    conn.commit()
+            except Exception:
+                pass
         # Insert default config if empty
         with engine.connect() as conn:
             result = conn.execute(
