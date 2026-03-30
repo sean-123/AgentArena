@@ -7,6 +7,7 @@ import {
   RobotOutlined,
   TrophyOutlined,
   SettingOutlined,
+  CloudServerOutlined,
 } from "@ant-design/icons";
 
 const { Header, Sider, Content } = Layout;
@@ -17,6 +18,7 @@ const menuItems = [
   { key: "/datasets", icon: <DatabaseOutlined />, label: "数据集" },
   { key: "/agents", icon: <RobotOutlined />, label: "Agent" },
   { key: "/leaderboard", icon: <TrophyOutlined />, label: "排行榜" },
+  { key: "/workers", icon: <CloudServerOutlined />, label: "Worker 监控" },
   { key: "/settings", icon: <SettingOutlined />, label: "设置" },
 ];
 

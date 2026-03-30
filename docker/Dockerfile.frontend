@@ -2,7 +2,9 @@ FROM node:20-alpine
 
 ARG TZ=Asia/Shanghai
 ENV TZ=${TZ}
-RUN apk add --no-cache tzdata
+# dl-cdn 在部分网络环境下 TLS 失败会导致 apk 拉不到索引、tzdata 报 “no such package”
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories \
+    && apk add --no-cache tzdata
 
 WORKDIR /app
 

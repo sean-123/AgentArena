@@ -6,8 +6,11 @@ Run with: uv run agentarena-worker
 
 import asyncio
 import json
+import logging
 import os
+import socket
 import uuid
+from datetime import datetime, timezone
 
 from pathlib import Path
 
@@ -35,6 +38,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
 from agentarena.core.config import get_settings
+from agentarena.core.worker_registry import WORKER_STATE_TTL_SEC, worker_state_redis_key
 from agentarena.evaluation_engine.agent_runner import call_agent
 from agentarena.evaluation_engine.arena_ranking import INITIAL_ELO
 from agentarena.evaluation_engine.llm_judge import judge_answer
@@ -45,8 +49,94 @@ from agentarena.models.comparison import ComparisonEvaluation, ComparisonScore
 from agentarena.models.evaluation import Evaluation, Score
 from agentarena.models.leaderboard import Leaderboard
 from agentarena.models.task import Task, TaskRun
+from agentarena.services.evaluation_service import (
+    EVALUATION_QUEUE,
+    EVALUATION_QUEUE_DLQ,
+    push_evaluation_job_dlq,
+)
 
-EVALUATION_QUEUE = "agentarena:evaluation_queue"
+
+class WorkerRuntimeState:
+    """Async-safe snapshot of worker presence / current job for Redis monitor."""
+
+    def __init__(self, worker_id: str, hostname: str, pid: int):
+        self.worker_id = worker_id
+        self.hostname = hostname
+        self.pid = pid
+        self.started_at = datetime.now(timezone.utc).isoformat()
+        self._lock = asyncio.Lock()
+        self._busy = False
+        self._job: dict | None = None
+        self._batch_index: int | None = None
+        self._batch_total: int | None = None
+
+    async def mark_idle(self) -> None:
+        async with self._lock:
+            self._busy = False
+            self._job = None
+            self._batch_index = None
+            self._batch_total = None
+
+    async def mark_busy_job(self, job: dict) -> None:
+        async with self._lock:
+            self._busy = True
+            tcs = job.get("testcases") or []
+            self._job = {
+                "id": job.get("id"),
+                "job_type": job.get("job_type"),
+                "task_id": job.get("task_id"),
+                "task_run_id": job.get("task_run_id"),
+                "total_evaluations": job.get("total_evaluations"),
+                "agent_version_id": job.get("agent_version_id"),
+                "compare_model": job.get("compare_model"),
+                "batch_testcase_count": len(tcs) if tcs else None,
+            }
+            jt = job.get("job_type", "agent")
+            if jt in ("agent_batch", "comparison_batch") and tcs:
+                self._batch_total = len(tcs)
+                self._batch_index = 0
+            else:
+                self._batch_total = 1
+                self._batch_index = 0
+
+    async def set_batch_progress(self, one_based_index: int, total: int | None = None) -> None:
+        async with self._lock:
+            self._batch_index = one_based_index
+            if total is not None:
+                self._batch_total = total
+
+    async def to_public_dict(self) -> dict:
+        async with self._lock:
+            return {
+                "worker_id": self.worker_id,
+                "hostname": self.hostname,
+                "pid": self.pid,
+                "started_at": self.started_at,
+                "state": "busy" if self._busy else "idle",
+                "job": self._job,
+                "batch_index": self._batch_index,
+                "batch_total": self._batch_total,
+            }
+
+
+async def _heartbeat_loop(r: redis.Redis, runtime: WorkerRuntimeState, stop: asyncio.Event) -> None:
+    key = worker_state_redis_key(runtime.worker_id)
+    while not stop.is_set():
+        try:
+            payload = await runtime.to_public_dict()
+            payload["last_seen"] = datetime.now(timezone.utc).isoformat()
+            await r.set(key, json.dumps(payload, ensure_ascii=False), ex=WORKER_STATE_TTL_SEC)
+        except Exception as e:
+            print(f"[Worker] heartbeat Redis 写入失败: {e}")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=15)
+            break
+        except asyncio.TimeoutError:
+            pass
+    try:
+        await r.delete(key)
+    except Exception:
+        pass
 
 
 def _truncate(s: str | None, max_len: int = 500) -> str:
@@ -121,7 +211,11 @@ async def get_agent_config(session: AsyncSession, agent_version_id: str) -> dict
     }
 
 
-async def process_job(session: AsyncSession, job: dict) -> bool:
+async def process_job(
+    session: AsyncSession,
+    job: dict,
+    runtime: WorkerRuntimeState | None = None,
+) -> bool:
     """Process evaluation job (single or batch).单 Agent 为批次顺序执行；多 Agent/对比模型时不同 Worker 并行。"""
     task_id = job.get("task_id")
     if task_id:
@@ -133,12 +227,16 @@ async def process_job(session: AsyncSession, job: dict) -> bool:
     job_type = job.get("job_type", "agent")
     # 批次 job：一个 Worker 顺序处理该 Agent/模型的所有 testcase
     if job_type == "agent_batch":
-        return await _process_agent_batch(session, job)
+        return await _process_agent_batch(session, job, runtime)
     if job_type == "comparison_batch":
-        return await _process_comparison_batch(session, job)
+        return await _process_comparison_batch(session, job, runtime)
     # 兼容旧版单条 job
     if job_type == "comparison":
+        if runtime:
+            await runtime.set_batch_progress(1, 1)
         return await _process_comparison_job(session, job)
+    if runtime:
+        await runtime.set_batch_progress(1, 1)
     return await _process_agent_job(session, job)
 
 
@@ -204,7 +302,11 @@ async def _process_comparison_job(session: AsyncSession, job: dict) -> bool:
     return True
 
 
-async def _process_agent_batch(session: AsyncSession, job: dict) -> bool:
+async def _process_agent_batch(
+    session: AsyncSession,
+    job: dict,
+    runtime: WorkerRuntimeState | None = None,
+) -> bool:
     """处理 Agent 批次：顺序执行该 Agent 的全部 testcase，由单个 Worker 完成。"""
     task_id = job.get("task_id")
     task_run_id = job.get("task_run_id")
@@ -215,6 +317,8 @@ async def _process_agent_batch(session: AsyncSession, job: dict) -> bool:
         return False
     print(f"[Worker] [批次-Agent] 开始处理 {len(testcases)} 条 testcase")
     for i, tc in enumerate(testcases):
+        if runtime:
+            await runtime.set_batch_progress(i + 1, len(testcases))
         mini_job = {
             "task_id": task_id,
             "task_run_id": task_run_id,
@@ -236,7 +340,11 @@ async def _process_agent_batch(session: AsyncSession, job: dict) -> bool:
     return True
 
 
-async def _process_comparison_batch(session: AsyncSession, job: dict) -> bool:
+async def _process_comparison_batch(
+    session: AsyncSession,
+    job: dict,
+    runtime: WorkerRuntimeState | None = None,
+) -> bool:
     """处理对比模型批次：顺序执行该模型的全部 testcase，由单个 Worker 完成。"""
     task_id = job.get("task_id")
     task_run_id = job.get("task_run_id")
@@ -247,6 +355,8 @@ async def _process_comparison_batch(session: AsyncSession, job: dict) -> bool:
         return False
     print(f"[Worker] [批次-{model_type}] 开始处理 {len(testcases)} 条 testcase")
     for i, tc in enumerate(testcases):
+        if runtime:
+            await runtime.set_batch_progress(i + 1, len(testcases))
         mini_job = {
             "task_id": task_id,
             "task_run_id": task_run_id,
@@ -494,39 +604,91 @@ async def _process_agent_job(session: AsyncSession, job: dict) -> bool:
 
 async def run_worker():
     """Main worker loop."""
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="[%(levelname)s] %(name)s: %(message)s",
+    )
     settings = get_settings()
     r = redis.from_url(settings.redis_url, decode_responses=True)
     try:
         await r.ping()
-        print(f"[Worker] Redis OK, polling {EVALUATION_QUEUE} @ {settings.redis_host}:{settings.redis_port}/{settings.redis_db}")
+        print(
+            f"[Worker] Redis OK, polling {EVALUATION_QUEUE} @ {settings.redis_host}:{settings.redis_port}/{settings.redis_db}; "
+            f"DLQ={EVALUATION_QUEUE_DLQ}"
+        )
     except Exception as e:
         print(f"[Worker] Redis ping FAILED: {e}")
         print(f"[Worker] 检查 Redis 配置（密码含 @ 等特殊字符需正确编码）、网络连通性")
         import sys
         sys.exit(1)
+
+    from agentarena.core.llm_probe import log_llm_judge_startup_probe
+
+    await log_llm_judge_startup_probe(service_name="Worker")
+
     engine = create_async_engine(settings.database_url)
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-    while True:
-        try:
-            result = await r.blpop(EVALUATION_QUEUE, timeout=5)
-            if result is None:
-                continue
-            _, job_str = result
-            job = json.loads(job_str)
-            print("[Worker] Processing job", job.get("id", job))
-            async with async_session() as session:
+    host = socket.gethostname() or "unknown-host"
+    worker_id = f"w_{uuid.uuid4().hex[:12]}"
+    runtime = WorkerRuntimeState(worker_id=worker_id, hostname=host, pid=os.getpid())
+    print(f"[Worker] worker_id={worker_id}（监控页 /api/workers/monitor 按此 ID 展示）")
+    stop_hb = asyncio.Event()
+    hb_task = asyncio.create_task(_heartbeat_loop(r, runtime, stop_hb))
+
+    try:
+        while True:
+            try:
+                await runtime.mark_idle()
+                result = await r.blpop(EVALUATION_QUEUE, timeout=5)
+                if result is None:
+                    continue
+                _, job_str = result
                 try:
-                    await process_job(session, job)
-                    await session.commit()
-                except Exception as e:
-                    await session.rollback()
-                    print(f"[ERROR] Job failed: {e}")
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            print(f"[ERROR] Worker error: {e}")
-            await asyncio.sleep(5)
+                    job = json.loads(job_str)
+                except json.JSONDecodeError as je:
+                    print(f"[ERROR] 主队列任务 JSON 无效，已写入 DLQ: {je}")
+                    try:
+                        await push_evaluation_job_dlq(
+                            r,
+                            reason="json_decode_error",
+                            message=str(je),
+                            raw_body=job_str,
+                            worker_id=worker_id,
+                        )
+                    except Exception as dlq_e:
+                        print(f"[ERROR] 写入 DLQ 失败，该条已从主队列移除且未备份: {dlq_e}")
+                    continue
+                if not isinstance(job, dict):
+                    print(f"[ERROR] 主队列任务 JSON 非对象 (type={type(job).__name__})，已写入 DLQ")
+                    try:
+                        await push_evaluation_job_dlq(
+                            r,
+                            reason="job_not_object",
+                            message=type(job).__name__,
+                            raw_body=job_str,
+                            worker_id=worker_id,
+                        )
+                    except Exception as dlq_e:
+                        print(f"[ERROR] 写入 DLQ 失败: {dlq_e}")
+                    continue
+                print("[Worker] Processing job", job.get("id", job))
+                await runtime.mark_busy_job(job)
+                async with async_session() as session:
+                    try:
+                        await process_job(session, job, runtime)
+                        await session.commit()
+                    except Exception as e:
+                        await session.rollback()
+                        print(f"[ERROR] Job failed: {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[ERROR] Worker error: {e}")
+                await asyncio.sleep(5)
+    finally:
+        stop_hb.set()
+        await hb_task
 
 
 def main():

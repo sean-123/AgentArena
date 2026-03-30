@@ -21,6 +21,20 @@ def _is_nacos_configured() -> bool:
     return bool(addr)
 
 
+def is_nacos_configured() -> bool:
+    """是否配置了 Nacos 地址（不代表本次一定拉取成功）。"""
+    return _is_nacos_configured()
+
+
+# 本次进程内是否已成功从 Nacos 拉取并 merge 进 os.environ（供启动探测日志区分配置来源）
+_nacos_merged_ok: bool = False
+
+
+def was_nacos_config_merged() -> bool:
+    """若为 True，说明本进程启动时已从 Nacos 成功合并过配置。"""
+    return _nacos_merged_ok
+
+
 def _parse_config_content(content: str) -> dict[str, str]:
     """解析 Nacos 配置内容。支持 properties 格式和 JSON 格式。"""
     content = (content or "").strip()
@@ -147,6 +161,8 @@ def load_nacos_config_if_configured() -> bool:
     若配置了 Nacos，则拉取配置并合并到 os.environ。
     返回是否成功从 Nacos 加载并应用了配置。
     """
+    global _nacos_merged_ok
+    _nacos_merged_ok = False
     if not _is_nacos_configured():
         return False
 
@@ -155,5 +171,6 @@ def load_nacos_config_if_configured() -> bool:
         return False
 
     _merge_into_environ(config)
-    print(f"[Nacos] 已从 Nacos 加载 {len(config)} 项配置")
+    _nacos_merged_ok = True
+    print(f"[Nacos] 已从 Nacos 加载 {len(config)} 项配置并合并至环境变量")
     return True

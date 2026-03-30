@@ -167,16 +167,116 @@ npm run dev
 
 ### 6. Docker 一键部署
 
+#### 6.1 使用 Compose 启动（会按 Dockerfile 本地构建）
+
 ```bash
 cd AgentArena/docker
 docker compose up -d
 ```
 
+仅构建镜像、不启动：
+
+```bash
+cd AgentArena/docker
+docker compose build
+```
+
+单独构建某个服务：
+
+```bash
+cd AgentArena/docker
+docker compose build backend
+docker compose build worker
+docker compose build frontend
+```
+
+#### 6.2 手动构建镜像（`docker build`）
+
+以下命令均在 **`AgentArena/docker`** 目录执行；`worker` 的构建上下文为**仓库根目录** `AgentArena`（即 `docker` 的上一级）。
+
+```bash
+cd AgentArena/docker
+
+# 镜像标签，按需修改（也可写死为 latest）
+export VERSION=1.0.0
+
+docker build --build-arg TZ=Asia/Shanghai \
+  -t agentarena-backend:${VERSION} \
+  -f Dockerfile.backend ../backend
+
+docker build --build-arg TZ=Asia/Shanghai \
+  -t agentarena-worker:${VERSION} \
+  -f Dockerfile.worker ..
+
+docker build --build-arg TZ=Asia/Shanghai \
+  -t agentarena-frontend:${VERSION} \
+  -f Dockerfile.frontend ../frontend
+```
+
+PowerShell 可将 `export VERSION=1.0.0` 换成 `$env:VERSION="1.0.0"`，并把上述 `${VERSION}` 改为 `$env:VERSION`，或直接把标签写成 `latest`。
+
+#### 6.3 多架构构建并推送到镜像仓库（`docker buildx`）
+
+推送前需 `docker login <你的仓库地址>`。将 `REGISTRY/NAMESPACE` 换成实际命名空间（示例与 `docker/build-push.bat` 中的阿里云配置类似，可按需修改）。
+
+```bash
+cd AgentArena/docker
+export VERSION=v1.0.0
+export REGISTRY=your-registry.example.com
+export NAMESPACE=your-namespace
+
+# linux/amd64（单架构加载到本机）
+docker buildx build --platform linux/amd64 --build-arg TZ=Asia/Shanghai \
+  -t ${REGISTRY}/${NAMESPACE}/agentarena-backend:${VERSION} \
+  -f Dockerfile.backend --load ../backend
+
+docker buildx build --platform linux/amd64 --build-arg TZ=Asia/Shanghai \
+  -t ${REGISTRY}/${NAMESPACE}/agentarena-worker:${VERSION} \
+  -f Dockerfile.worker --load ..
+
+docker buildx build --platform linux/amd64 --build-arg TZ=Asia/Shanghai \
+  -t ${REGISTRY}/${NAMESPACE}/agentarena-frontend:${VERSION} \
+  -f Dockerfile.frontend --load ../frontend
+```
+
+直接构建并推送到远端（不使用 `--load` 时用 `--push`）：
+
+```bash
+docker buildx build --platform linux/amd64 --build-arg TZ=Asia/Shanghai \
+  -t ${REGISTRY}/${NAMESPACE}/agentarena-backend:${VERSION} \
+  -f Dockerfile.backend --push ../backend
+
+docker buildx build --platform linux/amd64 --build-arg TZ=Asia/Shanghai \
+  -t ${REGISTRY}/${NAMESPACE}/agentarena-worker:${VERSION} \
+  -f Dockerfile.worker --push ..
+
+docker buildx build --platform linux/amd64 --build-arg TZ=Asia/Shanghai \
+  -t ${REGISTRY}/${NAMESPACE}/agentarena-frontend:${VERSION} \
+  -f Dockerfile.frontend --push ../frontend
+```
+
+需要 `linux/arm64` 时把 `--platform` 改为 `linux/arm64`，或 `linux/amd64,linux/arm64` 多架构一并推送（需已创建并使用 `docker buildx create` 的 builder）。
+
+#### 6.4 Windows：脚本构建并推送（`build-push.bat`）
+
+在 **`AgentArena/docker`** 下执行（脚本内可改 `REGISTRY`、`NAMESPACE`、默认架构等）：
+
+```bat
+cd AgentArena\docker
+build-push.bat backend v1.0.0
+build-push.bat worker v1.0.0 amd64
+build-push.bat frontend v1.0.0 arm64
+```
+
+推送前执行：`docker login <脚本中的 REGISTRY>`。
+
+---
+
 **镜像说明**：
 
 - `backend`、`worker`、`frontend` 的 Dockerfile 内已设置默认时区（`tzdata` + `TZ=Asia/Shanghai`，构建时 `--build-arg TZ=...` 可覆盖）。
 - `docker-compose.yml` 中为 mysql、redis、backend、worker、frontend 均设置了 `TZ: Asia/Shanghai`。
-- 从 `docker/` 目录执行 `build-push.bat` 构建镜像时，脚本会传入 `--build-arg TZ`（默认 `Asia/Shanghai`）。
+- `build-push.bat` 在 Windows `cmd` 下**不传** `--build-arg TZ`（含斜杠的值易被 cmd 误解析）；时区使用各 Dockerfile 中 `ARG TZ=Asia/Shanghai` 的默认值。在 Linux/macOS 或 Git Bash 下手动 `docker build` 时仍可自行加 `--build-arg TZ=...`。
 
 **Docker 镜像配置说明**：backend 与 worker 镜像内已内置 `.env.example` 作为默认配置。启动容器时可通过 `-e` 或 `environment:` 传入环境变量覆盖默认值；未传入的项将使用镜像内的默认配置。
 
@@ -430,7 +530,7 @@ AgentArena/
 │   ├── Dockerfile.backend
 │   ├── Dockerfile.worker
 │   ├── Dockerfile.frontend
-│   └── build-push.bat       # 镜像构建与推送（含 TZ 构建参数）
+│   └── build-push.bat       # Windows 下镜像构建与推送（时区用 Dockerfile 默认 ARG）
 ├── scripts/
 │   └── generate_excel_template.py
 ├── templates/               # Excel 模板说明与生成产物

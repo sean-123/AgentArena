@@ -24,11 +24,15 @@ from agentarena.api.agents import router as agents_router
 from agentarena.api.reports import router as reports_router
 from agentarena.api.system import router as system_router
 from agentarena.api.evaluation import router as evaluation_router
+from agentarena.api.workers import router as workers_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup/shutdown."""
+    from agentarena.core.llm_probe import log_llm_judge_startup_probe
+
+    await log_llm_judge_startup_probe(service_name="API")
     yield
 
 
@@ -53,6 +57,7 @@ app.include_router(agents_router, prefix="/api")
 app.include_router(reports_router, prefix="/api")
 app.include_router(system_router, prefix="/api")
 app.include_router(evaluation_router, prefix="/api")
+app.include_router(workers_router, prefix="/api")
 
 
 @app.get("/")

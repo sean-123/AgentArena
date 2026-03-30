@@ -1,7 +1,9 @@
 """Evaluation service - dispatches jobs to Redis queue."""
 
+import base64
 import json
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 import redis.asyncio as redis
@@ -9,6 +11,34 @@ import redis.asyncio as redis
 from agentarena.core.config import get_settings
 
 EVALUATION_QUEUE = "agentarena:evaluation_queue"
+# 主队列 JSON 无法解析或结构非法时写入，便于人工修复后重新 RPUSH 到 EVALUATION_QUEUE
+EVALUATION_QUEUE_DLQ = "agentarena:evaluation_queue_dlq"
+_MAX_DLQ_RAW_BYTES = 256 * 1024
+
+
+async def push_evaluation_job_dlq(
+    r: redis.Redis,
+    *,
+    reason: str,
+    message: str,
+    raw_body: str,
+    worker_id: str | None = None,
+) -> None:
+    """将无法处理的主队列条目写入 DLQ（payload base64，超长截断）。"""
+    raw_bytes = raw_body.encode("utf-8", errors="replace")
+    truncated = len(raw_bytes) > _MAX_DLQ_RAW_BYTES
+    if truncated:
+        raw_bytes = raw_bytes[:_MAX_DLQ_RAW_BYTES]
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "reason": reason,
+        "message": message,
+        "payload_b64": base64.b64encode(raw_bytes).decode("ascii"),
+        "payload_truncated": truncated,
+    }
+    if worker_id:
+        entry["worker_id"] = worker_id
+    await r.rpush(EVALUATION_QUEUE_DLQ, json.dumps(entry, ensure_ascii=False))
 
 
 class EvaluationService:
