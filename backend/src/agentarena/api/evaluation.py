@@ -2,17 +2,14 @@
 
 import json
 import uuid
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentarena.core.database import DbSession
-from agentarena.core.config import get_settings
-from agentarena.models.task import Task, TaskRun
-from agentarena.models.dataset import DatasetVersion, Testcase
 from agentarena.models.agent import Agent, AgentVersion
+from agentarena.models.dataset import DatasetVersion
+from agentarena.models.task import Task, TaskRun
 from agentarena.services.evaluation_service import EvaluationService
 
 router = APIRouter(prefix="/evaluation", tags=["evaluation"])
@@ -35,11 +32,9 @@ async def run_evaluation(
     if task.status == "running":
         raise HTTPException(400, "Task is already running")
 
-    # Get dataset version and agents
     dataset_version_id = task.dataset_version_id or task.dataset_id
     if not dataset_version_id:
         raise HTTPException(400, "Task has no dataset/dataset_version")
-    # If dataset_id was used, get first version
     if task.dataset_version_id:
         dv_id = task.dataset_version_id
     else:
@@ -61,14 +56,12 @@ async def run_evaluation(
         except json.JSONDecodeError:
             pass
     if not agent_ids:
-        # Get all agents
         agents_result = await db.execute(select(Agent.id))
         agent_ids = [r[0] for r in agents_result.all()]
 
     if not agent_ids:
         raise HTTPException(400, "No agents configured for task")
 
-    # Get latest version of each agent
     agent_version_ids = []
     for agent_id in agent_ids:
         av_result = await db.execute(
@@ -79,7 +72,7 @@ async def run_evaluation(
         )
         av_id = av_result.scalar_one_or_none()
         if av_id:
-            agent_version_ids.append(av_id)  # scalar_one 返回标量，不要用 av_id[0]
+            agent_version_ids.append(av_id)
 
     if not agent_version_ids:
         raise HTTPException(400, "No agent versions found")
@@ -91,7 +84,6 @@ async def run_evaluation(
         except json.JSONDecodeError:
             pass
 
-    # Create task run
     task_run = TaskRun(
         id=f"run_{uuid.uuid4().hex[:12]}",
         task_id=task_id,
@@ -103,18 +95,24 @@ async def run_evaluation(
 
     service = EvaluationService()
     try:
-        job_count = await service.dispatch_evaluation_jobs(
+        dispatch_result = await service.dispatch_evaluation_jobs(
             task_id=task_id,
             task_run_id=task_run.id,
             dataset_version_id=dv_id,
             agent_version_ids=agent_version_ids,
             compare_model_ids=compare_model_ids or None,
         )
-        task_run.total_jobs = job_count
+        total_evaluations = dispatch_result["total_evaluations"]
+        dispatched_jobs = dispatch_result["dispatched_jobs"]
+        task_run.total_jobs = total_evaluations
         task_run.status = "running"
-        if job_count == 0:
+        if total_evaluations == 0:
             import sys
-            print(f"[Run] WARN: task_id={task_id} 已 dispatch 但 job_count=0，请检查数据集版本 {dv_id} 是否有 testcase", file=sys.stderr)
+
+            print(
+                f"[Run] WARN: task_id={task_id} dispatched 0 evaluations, check dataset version {dv_id}",
+                file=sys.stderr,
+            )
         await db.flush()
     except Exception as e:
         task.status = "failed"
@@ -127,5 +125,6 @@ async def run_evaluation(
         "status": "dispatched",
         "dataset_version_id": dv_id,
         "agent_count": len(agent_version_ids),
-        "total_jobs": job_count,
+        "total_jobs": total_evaluations,
+        "dispatched_jobs": dispatched_jobs,
     }

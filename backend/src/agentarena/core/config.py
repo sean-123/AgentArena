@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    evaluation_batch_size: int = 10
 
     # LLM Judge
     openai_api_key: str = ""

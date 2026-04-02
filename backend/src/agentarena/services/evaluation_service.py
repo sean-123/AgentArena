@@ -4,16 +4,21 @@ import base64
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 import redis.asyncio as redis
 
 from agentarena.core.config import get_settings
 
 EVALUATION_QUEUE = "agentarena:evaluation_queue"
-# 主队列 JSON 无法解析或结构非法时写入，便于人工修复后重新 RPUSH 到 EVALUATION_QUEUE
 EVALUATION_QUEUE_DLQ = "agentarena:evaluation_queue_dlq"
 _MAX_DLQ_RAW_BYTES = 256 * 1024
+
+
+def _chunked(items: list[Any], chunk_size: int) -> list[list[Any]]:
+    """Split items into stable, non-empty chunks."""
+    size = max(int(chunk_size or 1), 1)
+    return [items[i : i + size] for i in range(0, len(items), size)]
 
 
 async def push_evaluation_job_dlq(
@@ -24,7 +29,7 @@ async def push_evaluation_job_dlq(
     raw_body: str,
     worker_id: str | None = None,
 ) -> None:
-    """将无法处理的主队列条目写入 DLQ（payload base64，超长截断）。"""
+    """Persist malformed queue payloads to a DLQ for later inspection."""
     raw_bytes = raw_body.encode("utf-8", errors="replace")
     truncated = len(raw_bytes) > _MAX_DLQ_RAW_BYTES
     if truncated:
@@ -60,113 +65,128 @@ class EvaluationService:
         dataset_version_id: str,
         agent_version_ids: list[str],
         compare_model_ids: list[str] | None = None,
-    ) -> int:
+    ) -> dict[str, int]:
         """
-        按批次分发任务：每个 Agent 一个 batch job，每个对比模型一个 batch job。
-        - 单个 Agent 无对比：1 个 job，由单个 Worker 顺序执行所有 testcase
-        - 多 Agent 或多对比模型：多个 job，由不同 Worker 并行执行
-        total_evaluations: 总评测条数（用于进度与完成判断）
-        Returns: total_evaluations（用于 task_run.total_jobs 进度显示）
+        Dispatch evaluation work in small batches so a single agent can be
+        consumed by multiple workers instead of one long-running worker.
+
+        Returns both:
+        - total_evaluations: total testcase * executor combinations
+        - dispatched_jobs: actual Redis job count after chunking
         """
         from sqlalchemy import select
-        from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
         from sqlalchemy.orm import sessionmaker
-        from agentarena.core.config import get_settings
-        from agentarena.models.dataset import Testcase
+
         from agentarena.models.agent import AgentVersion
+        from agentarena.models.dataset import Testcase
 
         settings = get_settings()
         engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        count = 0
-        compare_models = [m for m in (compare_model_ids or []) if m in ("doubao", "qwen", "deepseek")]
+        compare_models = [
+            model for model in (compare_model_ids or []) if model in ("doubao", "qwen", "deepseek")
+        ]
+        batch_size = max(int(settings.evaluation_batch_size or 1), 1)
+        dispatched_jobs = 0
+
         async with async_session() as session:
             result = await session.execute(
                 select(Testcase).where(Testcase.dataset_version_id == dataset_version_id)
             )
-            testcases = result.scalars().all()
+            testcases = list(result.scalars().all())
 
-            # 预加载各 agent_version 的 config（含 persona）
-            av_configs: dict[str, dict] = {}
+            av_configs: dict[str, dict[str, Any]] = {}
             av_result = await session.execute(
                 select(AgentVersion).where(AgentVersion.id.in_(agent_version_ids))
             )
             for av in av_result.scalars().all():
-                cfg = {}
+                cfg: dict[str, Any] = {}
                 if av.config_json:
                     try:
                         cfg = json.loads(av.config_json)
                     except json.JSONDecodeError:
-                        pass
+                        cfg = {}
                 av_configs[av.id] = cfg
 
-            # 总评测条数（用于 task_run 完成判断）
-            total_evaluations = len(testcases) * len(agent_version_ids) + len(testcases) * len(compare_models)
-            default_persona = av_configs.get(agent_version_ids[0], {}) if agent_version_ids else {}
-
+            total_evaluations = len(testcases) * (len(agent_version_ids) + len(compare_models))
+            default_persona_cfg = av_configs.get(agent_version_ids[0], {}) if agent_version_ids else {}
+            testcase_chunks = _chunked(testcases, batch_size)
             r = await self._get_redis()
 
-            # 每个 Agent 一个 batch job，该 Worker 顺序执行该 Agent 的全部 testcase
             for av_id in agent_version_ids:
                 cfg = av_configs.get(av_id, {})
-                testcase_items = [
-                    {
-                        "testcase_id": tc.id,
-                        "question": tc.question or "",
-                        "persona_question": tc.persona_question or None,
-                        "persona": cfg.get("persona"),
-                        "key_points": tc.key_points,
+                for chunk_index, testcase_chunk in enumerate(testcase_chunks, start=1):
+                    job = {
+                        "id": f"job_{uuid.uuid4().hex[:12]}",
+                        "job_type": "agent_batch",
+                        "task_id": task_id,
+                        "task_run_id": task_run_id,
+                        "total_evaluations": total_evaluations,
+                        "agent_version_id": av_id,
+                        "batch_index": chunk_index,
+                        "batch_count": len(testcase_chunks),
+                        "testcases": [
+                            {
+                                "testcase_id": tc.id,
+                                "question": tc.question or "",
+                                "persona_question": tc.persona_question or None,
+                                "persona": cfg.get("persona"),
+                                "key_points": tc.key_points,
+                            }
+                            for tc in testcase_chunk
+                        ],
                     }
-                    for tc in testcases
-                ]
-                job = {
-                    "id": f"job_{uuid.uuid4().hex[:12]}",
-                    "job_type": "agent_batch",
-                    "task_id": task_id,
-                    "task_run_id": task_run_id,
-                    "total_evaluations": total_evaluations,
-                    "agent_version_id": av_id,
-                    "testcases": testcase_items,
-                }
-                await r.rpush(EVALUATION_QUEUE, json.dumps(job, ensure_ascii=False))
-                count += 1
+                    await r.rpush(EVALUATION_QUEUE, json.dumps(job, ensure_ascii=False))
+                    dispatched_jobs += 1
 
-            # 每个对比模型一个 batch job，由不同 Worker 并行执行
             for model_type in compare_models:
-                testcase_items = [
-                    {
-                        "testcase_id": tc.id,
-                        "question": tc.question or "",
-                        "persona_question": tc.persona_question or None,
-                        "persona": default_persona.get("persona"),
-                        "key_points": tc.key_points,
+                for chunk_index, testcase_chunk in enumerate(testcase_chunks, start=1):
+                    job = {
+                        "id": f"job_{uuid.uuid4().hex[:12]}",
+                        "job_type": "comparison_batch",
+                        "task_id": task_id,
+                        "task_run_id": task_run_id,
+                        "total_evaluations": total_evaluations,
+                        "compare_model": model_type,
+                        "batch_index": chunk_index,
+                        "batch_count": len(testcase_chunks),
+                        "testcases": [
+                            {
+                                "testcase_id": tc.id,
+                                "question": tc.question or "",
+                                "persona_question": tc.persona_question or None,
+                                "persona": default_persona_cfg.get("persona"),
+                                "key_points": tc.key_points,
+                            }
+                            for tc in testcase_chunk
+                        ],
                     }
-                    for tc in testcases
-                ]
-                job = {
-                    "id": f"job_{uuid.uuid4().hex[:12]}",
-                    "job_type": "comparison_batch",
-                    "task_id": task_id,
-                    "task_run_id": task_run_id,
-                    "total_evaluations": total_evaluations,
-                    "compare_model": model_type,
-                    "testcases": testcase_items,
-                }
-                await r.rpush(EVALUATION_QUEUE, json.dumps(job, ensure_ascii=False))
-                count += 1
+                    await r.rpush(EVALUATION_QUEUE, json.dumps(job, ensure_ascii=False))
+                    dispatched_jobs += 1
 
-            if count > 0:
-                import logging
-                logging.getLogger("agentarena").info(
-                    f"[Dispatch] task_id={task_id} 分发 {count} 个 batch job（每个 Agent/模型独立批次）"
-                )
-        return total_evaluations
+        if dispatched_jobs > 0:
+            import logging
+
+            logging.getLogger("agentarena").info(
+                "[Dispatch] task_id=%s batch_size=%s dispatched_jobs=%s total_evaluations=%s",
+                task_id,
+                batch_size,
+                dispatched_jobs,
+                total_evaluations,
+            )
+
+        await engine.dispose()
+        return {
+            "total_evaluations": total_evaluations,
+            "dispatched_jobs": dispatched_jobs,
+        }
 
     async def remove_jobs_for_task(self, task_id: str) -> int:
         """
-        从 Redis 队列中移除该任务对应的所有 job。
-        删除任务时调用，避免 Worker 继续处理已删除任务的 job。
-        Returns: 移除的 job 数量。
+        Remove all queued jobs for a given task from Redis.
+
+        Returns the number of removed jobs.
         """
         r = await self._get_redis()
         try:
@@ -183,7 +203,7 @@ class EvaluationService:
                 else:
                     remaining.append(job_str)
             except (json.JSONDecodeError, TypeError):
-                remaining.append(job_str)  # 无法解析的保留
+                remaining.append(job_str)
         if removed > 0:
             pipe = r.pipeline()
             pipe.delete(EVALUATION_QUEUE)
@@ -191,6 +211,7 @@ class EvaluationService:
                 pipe.rpush(EVALUATION_QUEUE, *remaining)
             await pipe.execute()
             import logging
+
             logging.getLogger("agentarena").info(
                 f"[Queue] task_id={task_id} removed {removed} jobs from {EVALUATION_QUEUE}"
             )
