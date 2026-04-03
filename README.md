@@ -27,16 +27,19 @@
 2. **配置 Agent**：为每个待评测的 Agent 配置 HTTP 接口、认证、流式开关等（可选 Langfuse 全局配置）
 3. **创建评估任务**：选择数据集版本和 Agent 版本，一键发起评估
 4. **执行评测**：Worker 从 Redis 队列拉取任务，调用 Agent 获取回答 → LLM Judge 打分 → 写入数据库（按条提交，任务详情可实时看进度与日志）
-5. **查看结果**：排行榜 ELO 排名、逐条评测详情，以及**任务总结报告**（高频优缺点、回复质量、信息准确度、体验改进建议等）
+5. **查看结果**：排行榜 ELO 排名、逐条评测详情（可展开下载 Markdown 明细），以及**任务总结报告**（高频优缺点、回复质量、信息准确度、体验改进建议等，支持整批与分段 Markdown 导出）
+6. **运维观测**：**Worker 监控**页查看分布式 Worker 在线状态与队列积压（需与 API 共用同一 Redis）
 
 ### 特色能力
 
 | 能力 | 说明 |
 |------|------|
 | **Persona 人设** | 根据人设描述将规范问题改写为更自然的提问，模拟真实用户表达 |
-| **任务总结报告** | 聚合评测中的 pros/cons，按优缺点举例，并生成质量与体验类总评 |
+| **任务总结报告** | 聚合评测中的 pros/cons，按优缺点举例，并生成质量与体验类总评；支持整批与各细分维度 Markdown 导出 |
 | **通用大模型对比** | 可将自研 Agent 与豆包、通义千问、DeepSeek 等通用模型同场对比 |
 | **强制完成与自愈** | 任务卡住时可手动强制完成；详情接口会按实际评测数修正任务状态 |
+| **Worker 监控** | 展示在线 Worker、队列待处理 job、当前任务评测进度（Redis 心跳） |
+| **排行榜明细导出** | 展开某 Agent 行后可下载与接口一致的评测明细 Markdown |
 
 ### 适用场景
 
@@ -56,6 +59,9 @@
 | **Arena 排行榜** | 基于 ELO 的排名，每次运行独立结果，支持多批次对比 |
 | **评估引擎** | LLM Judge 打分（正确性、完整性、清晰度、幻觉控制） |
 | **分布式 Worker** | Redis 任务队列；Worker 与 API 需连接同一 MySQL、同一 Redis |
+| **Worker 监控** | Web 页查看在线 Worker、队列待处理 job 数、当前任务与评测进度（Redis 心跳） |
+| **队列死信（DLQ）** | 主队列 JSON 无法解析时写入 `agentarena:evaluation_queue_dlq`，避免静默丢任务 |
+| **报告 Markdown 导出** | 任务总结报告支持整批与各 Agent/对比模型/Langfuse Prompt 分段下载；排行榜展开区可下载评测明细 |
 | **Persona 问题** | 根据人设将规范问题改写为自然提问 |
 | **MySQL 配置** | 支持 Web 界面配置数据库 |
 | **一键初始化** | 一键创建数据库与表结构 |
@@ -152,6 +158,8 @@ uv run agentarena-worker
 ```
 
 请确保 **API 与 Worker 使用相同的 `DATABASE_URL` / MySQL 与 Redis 配置**，否则任务会跑但前端进度与日志不更新。
+
+若主队列中出现 **非法 JSON**，Worker 会将该条写入 Redis 列表 **`agentarena:evaluation_queue_dlq`**（含原始 payload 的 base64），便于修复后手动 `RPUSH` 回 `agentarena:evaluation_queue`。
 
 ### 5. 前端
 
@@ -274,6 +282,7 @@ build-push.bat frontend v1.0.0 arm64
 
 **镜像说明**：
 
+- `backend`、`worker` 镜像在构建阶段通过 **`pip install uv`** 安装 uv（**不依赖 `ghcr.io`**，避免部分网络无法访问 GitHub Container Registry）。若 **PyPI 拉取慢**，可在 Dockerfile 的 `pip install` 行临时增加 `-i https://pypi.tuna.tsinghua.edu.cn/simple` 等镜像源，或使用构建代理。
 - `backend`、`worker`、`frontend` 的 Dockerfile 内已设置默认时区（`tzdata` + `TZ=Asia/Shanghai`，构建时 `--build-arg TZ=...` 可覆盖）。
 - `docker-compose.yml` 中为 mysql、redis、backend、worker、frontend 均设置了 `TZ: Asia/Shanghai`。
 - `build-push.bat` 在 Windows `cmd` 下**不传** `--build-arg TZ`（含斜杠的值易被 cmd 误解析）；时区使用各 Dockerfile 中 `ARG TZ=Asia/Shanghai` 的默认值。在 Linux/macOS 或 Git Bash 下手动 `docker build` 时仍可自行加 `--build-arg TZ=...`。
@@ -451,6 +460,12 @@ AGENTARENA_OPENAI_API_KEY=sk-xxx
 - 在 **排行榜** 页面查看 ELO 排名
 - 筛选 **任务** 与 **运行批次**
 - 展开行查看每次评测的提问、回答、优点、缺点、优化建议
+- 展开后可用 **「下载展开内容（Markdown）」** 导出当前 Agent 的全部评测明细（与列表接口数据一致）
+
+### 6. Worker 监控与报告导出
+
+- **Worker 监控**（侧栏）：查看在线 Worker、Redis 队列待处理 batch job 数、当前执行任务与评测进度（依赖与 API 相同的 Redis）
+- **任务 → 查看总结报告**：支持 **下载完整批次总结（Markdown）**，以及各 Agent、对比模型、Langfuse Prompt 等 **分段 Markdown**
 
 ---
 
@@ -493,7 +508,9 @@ LLM Judge 对每次回答打分（1–5 分）：
 | GET/POST | `/api/agents` | Agent CRUD |
 | POST | `/api/evaluation/tasks/{id}/run` | 发起评估 |
 | GET | `/api/reports/leaderboard` | 排行榜（支持 task_id、task_run_id） |
+| GET | `/api/reports/leaderboard/detail` | 排行榜展开区：某任务+Agent 版本下的逐条评测明细 |
 | GET | `/api/reports/summary` | 任务总结报告 |
+| GET | `/api/workers/monitor` | Worker 监控：队列长度、Redis 心跳、任务进度聚合 |
 
 ---
 
@@ -503,8 +520,8 @@ LLM Judge 对每次回答打分（1–5 分）：
 AgentArena/
 ├── backend/
 │   ├── src/agentarena/
-│   │   ├── api/             # REST 路由（tasks、datasets、agents、evaluation、reports、system）
-│   │   ├── core/            # 配置、数据库、init_db
+│   │   ├── api/             # REST 路由（tasks、datasets、agents、evaluation、reports、system、workers）
+│   │   ├── core/            # 配置、数据库、init_db、worker_registry（监控用 Redis 键约定）
 │   │   ├── models/          # SQLAlchemy 模型
 │   │   ├── schemas/         # Pydantic 模式
 │   │   ├── services/        # 评估服务、任务分发、Langfuse 等
@@ -519,10 +536,12 @@ AgentArena/
 │   └── pyproject.toml
 ├── frontend/
 │   ├── src/
-│   │   ├── pages/           # 各业务页面（tasks、datasets、agents、leaderboard、settings）
+│   │   ├── pages/           # 各业务页面（tasks、datasets、agents、leaderboard、workers、settings）
+│   │   ├── components/      # MainLayout、SummaryReportDetail（总结报告与 Markdown 导出）等
+│   │   ├── utils/           # summaryReportMarkdown、leaderboardEvalMarkdown 等
+│   │   ├── types/           # summaryReport 等与后端报告响应对齐的 TS 类型
 │   │   ├── pages/api/       # API 代理 [[...path]].ts
 │   │   ├── middleware.ts    # 如 /__vite_ping 占位（避免开发时 404 日志）
-│   │   └── components/
 │   ├── public/              # 静态资源（含 Excel 模板）
 │   └── package.json
 ├── docker/
@@ -592,6 +611,14 @@ Authorization: Bearer {token}  # 若配置了 auth_token
 ### 6. 开发时终端出现 `GET /__vite_ping 404`
 
 部分编辑器会探测 Vite 开发服务；本项目为 Next.js。已在 `frontend/src/middleware.ts` 对 `/__vite_ping` 返回 200，避免无意义 404 日志。
+
+### 7. Docker 构建报错 `ghcr.io/astral-sh/uv` 或 PyPI 超时
+
+当前 `Dockerfile.backend` / `Dockerfile.worker` 已改为在镜像内 **`pip install uv`**，不再从 `ghcr.io` 拉取 uv。若仍失败，多为 **PyPI 网络问题**，可在 Dockerfile 的 `pip install` 命令上增加国内镜像参数（如 `-i https://pypi.tuna.tsinghua.edu.cn/simple`）后重新构建。
+
+### 8. Worker 监控页无在线节点
+
+确认已单独启动 `uv run agentarena-worker`（或 worker 容器），且 **Redis 地址与 API 进程一致**；Worker 启动日志会打印 `worker_id`。监控数据依赖 Redis 键 `agentarena:worker:state:*` 的心跳。
 
 ---
 
